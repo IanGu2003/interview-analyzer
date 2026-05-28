@@ -36,8 +36,10 @@ def postprocess_output(output_format: str = "excel", questions: str = None) -> s
 
 
 def _generate_excel(memory, questions_data: List[Dict] = None) -> str:
-    """生成Excel文件"""
+    """生成Excel文件（自动上传对象存储返回可下载URL）"""
     import os
+    import csv
+    from coze_coding_dev_sdk.s3 import S3SyncStorage
     
     # 构建问题ID到文本的映射
     q_map = {}
@@ -64,20 +66,41 @@ def _generate_excel(memory, questions_data: List[Dict] = None) -> str:
     if not rows:
         return json.dumps({"message": "暂无匹配数据", "data": []})
     
-    # 保存为CSV（Excel兼容）
-    output_path = f"/tmp/interview_results_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+    # 先生成到/tmp
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    output_path = f"/tmp/interview_results_{timestamp}.csv"
     
     try:
-        import csv
         with open(output_path, 'w', newline='', encoding='utf-8-sig') as f:
             writer = csv.DictWriter(f, fieldnames=["问题ID", "问题文本", "受访者原话", "时间戳", "置信度"])
             writer.writeheader()
             writer.writerows(rows)
         
+        # 上传到对象存储
+        storage = S3SyncStorage(
+            endpoint_url=os.getenv("COZE_BUCKET_ENDPOINT_URL"),
+            access_key="",
+            secret_key="",
+            bucket_name=os.getenv("COZE_BUCKET_NAME"),
+            region="cn-beijing",
+        )
+        
+        with open(output_path, 'rb') as f:
+            file_content = f.read()
+        
+        file_key = storage.upload_file(
+            file_content=file_content,
+            file_name=f"interview_report_{timestamp}.csv",
+            content_type="text/csv",
+        )
+        
+        download_url = storage.generate_presigned_url(key=file_key, expire_time=86400)
+        
         return json.dumps({
             "status": "success",
             "format": "csv",
             "path": output_path,
+            "download_url": download_url,
             "rows_count": len(rows)
         })
     except Exception as e:
@@ -115,7 +138,10 @@ def _generate_word(memory, questions_data: List[Dict] = None) -> str:
 
 
 def _generate_markdown(memory, questions_data: List[Dict] = None) -> str:
-    """生成Markdown内容"""
+    """生成Markdown内容并上传对象存储"""
+    import os
+    from coze_coding_dev_sdk.s3 import S3SyncStorage
+    
     q_map = {}
     if questions_data:
         for q in questions_data:
@@ -125,17 +151,38 @@ def _generate_markdown(memory, questions_data: List[Dict] = None) -> str:
     
     content = _generate_markdown_content(memory, q_map)
     
-    # 保存文件
-    output_path = f"/tmp/interview_results_{datetime.now().strftime('%Y%m%d_%H%M%S')}.md"
+    # 保存到/tmp
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    output_path = f"/tmp/interview_results_{timestamp}.md"
     
     try:
         with open(output_path, 'w', encoding='utf-8') as f:
             f.write(content)
         
+        # 上传到对象存储
+        storage = S3SyncStorage(
+            endpoint_url=os.getenv("COZE_BUCKET_ENDPOINT_URL"),
+            access_key="",
+            secret_key="",
+            bucket_name=os.getenv("COZE_BUCKET_NAME"),
+            region="cn-beijing",
+        )
+        
+        with open(output_path, 'rb') as f:
+            file_content = f.read()
+        
+        file_key = storage.upload_file(
+            file_content=file_content,
+            file_name=f"interview_report_{timestamp}.md",
+            content_type="text/markdown",
+        )
+        download_url = storage.generate_presigned_url(key=file_key, expire_time=86400)
+        
         return json.dumps({
             "status": "success",
             "format": "markdown",
             "path": output_path,
+            "download_url": download_url,
             "content": content
         })
     except Exception as e:
