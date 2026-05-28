@@ -1,15 +1,17 @@
 """
 音频转写工具 - 将音频文件转换为文字
 - 支持本地音频文件和URL
-- 自动使用ffmpeg转码为标准格式（16kHz, 16bit, mono WAV/MP3）
-- 解决服务端audio convert failed问题
+- 自动使用ffmpeg转码为标准格式（16kHz, 16bit, mono WAV）
+- 解决服务端audio convert failed问题（错误码11103/21109）
 """
 import base64
 import os
 import json
 import subprocess
 import tempfile
-from typing import List, Dict, Any, Optional
+import uuid
+import time
+from typing import Dict, Any
 from langchain.tools import tool
 from coze_coding_dev_sdk import ASRClient
 from coze_coding_utils.runtime_ctx.context import new_context
@@ -26,9 +28,10 @@ TARGET_BIT_DEPTH = "16"        # 16bit
 def check_ffmpeg() -> bool:
     """检查ffmpeg是否可用"""
     try:
-        subprocess.run(["ffmpeg", "-version"], capture_output=True, check=True)
-        return True
-    except Exception:
+        r = subprocess.run(["ffmpeg", "-version"], capture_output=True, text=True, timeout=10)
+        return r.returncode == 0
+    except Exception as e:
+        print(f"[DEBUG] check_ffmpeg failed: {e}")
         return False
 
 
@@ -37,20 +40,32 @@ def get_file_size_mb(path: str) -> float:
     return os.path.getsize(path) / (1024 * 1024)
 
 
-def convert_audio_to_standard(input_path: str, output_path: str) -> bool:
+def convert_audio_with_ffmpeg(input_path: str, output_path: str) -> tuple[bool, str]:
     """
-    使用ffmpeg将音频转换为标准格式
-    
-    标准参数：
-    - 采样率: 16kHz
-    - 声道: mono
-    - 编码: pcm_s16le (WAV)
-    - 输出格式: WAV
-    
+    使用ffmpeg将音频转换为标准16kHz/mono/16bit WAV
+
     Returns:
-        True表示转换成功
+        (成功标志, 详细信息)
     """
     try:
+        # 先探测原始音频信息
+        probe_cmd = [
+            "ffprobe", "-v", "quiet",
+            "-print_format", "json",
+            "-show_format", "-show_streams",
+            input_path
+        ]
+        probe_r = subprocess.run(probe_cmd, capture_output=True, text=True, timeout=30)
+        probe_info = ""
+        if probe_r.returncode == 0:
+            info = json.loads(probe_r.stdout)
+            streams = info.get("streams", [])
+            if streams:
+                s = streams[0]
+                probe_info = f"codec={s.get('codec_name')}, sr={s.get('sample_rate')}, ch={s.get('channels')}, dur={s.get('duration', '?')}s"
+                print(f"[DEBUG] 原始音频信息: {probe_info}")
+
+        # 执行转码
         cmd = [
             "ffmpeg", "-y",
             "-i", input_path,
@@ -60,43 +75,40 @@ def convert_audio_to_standard(input_path: str, output_path: str) -> bool:
             "-f", "wav",
             output_path
         ]
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
+
         if result.returncode != 0:
-            print(f"[WARN] ffmpeg convert failed: {result.stderr}")
-            return False
-        return True
+            err = result.stderr[-300:] if result.stderr else "无错误输出"
+            return False, f"ffmpeg返回码{result.returncode}: {err}"
+
+        if not os.path.exists(output_path):
+            return False, "转码后文件不存在"
+
+        out_size = os.path.getsize(output_path)
+        if out_size == 0:
+            return False, "转码后文件为空"
+
+        return True, f"转码成功: {out_size/1024/1024:.1f}MB, {probe_info}"
+
     except subprocess.TimeoutExpired:
-        print("[WARN] ffmpeg convert timeout")
-        return False
+        return False, "ffmpeg转码超时(>180s)"
     except Exception as e:
-        print(f"[WARN] ffmpeg convert exception: {e}")
-        return False
+        return False, f"ffmpeg异常: {e}"
 
 
-def probe_audio_info(path: str) -> Dict[str, Any]:
-    """使用ffprobe获取音频信息"""
-    try:
-        cmd = [
-            "ffprobe", "-v", "quiet",
-            "-print_format", "json",
-            "-show_format", "-show_streams",
-            path
-        ]
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
-        if result.returncode == 0:
-            return json.loads(result.stdout)
-    except:
-        pass
-    return {}
-
-
-def download_file(url: str, local_path: str, max_size_mb: int = 100) -> bool:
+def download_file(url: str, local_path: str, max_size_mb: int = 100) -> tuple[bool, str]:
     """从URL下载文件到本地"""
     try:
-        resp = requests.get(url, stream=True, timeout=60)
+        resp = requests.get(url, stream=True, timeout=120)
         resp.raise_for_status()
-        
-        # 流式写入并检查大小
+
+        # 检查Content-Length
+        content_length = resp.headers.get("Content-Length")
+        if content_length:
+            size_mb = int(content_length) / (1024 * 1024)
+            if size_mb > max_size_mb:
+                return False, f"文件大小{size_mb:.1f}MB超过{max_size_mb}MB限制"
+
         downloaded = 0
         with open(local_path, "wb") as f:
             for chunk in resp.iter_content(chunk_size=8192):
@@ -104,12 +116,15 @@ def download_file(url: str, local_path: str, max_size_mb: int = 100) -> bool:
                 downloaded += len(chunk)
                 if downloaded > max_size_mb * 1024 * 1024:
                     os.remove(local_path)
-                    print(f"[ERROR] 文件超过{max_size_mb}MB限制")
-                    return False
-        return True
+                    return False, f"下载超过{max_size_mb}MB限制"
+
+        actual_mb = downloaded / (1024 * 1024)
+        return True, f"下载完成: {actual_mb:.1f}MB"
+
+    except requests.exceptions.RequestException as e:
+        return False, f"下载请求失败: {e}"
     except Exception as e:
-        print(f"[ERROR] 下载失败: {e}")
-        return False
+        return False, f"下载异常: {e}"
 
 
 @tool
@@ -117,147 +132,131 @@ def speech_to_text(audio_path: str, uid: str = "interview_user") -> str:
     """
     将音频文件转换为文字（支持 .mp3, .wav, .ogg, .m4a 等格式）
     支持本地路径和HTTP/HTTPS URL
-    自动使用ffmpeg将音频转为标准格式再提交，解决转码失败问题
-    
+    自动使用ffmpeg将音频转为标准16kHz/mono/16bit WAV再提交
+
     Args:
         audio_path: 音频文件路径或URL
         uid: 用户唯一标识符
-    
+
     Returns:
         包含转写文字和时间戳信息的JSON字符串
     """
+    session_id = str(uuid.uuid4())[:8]
+    print(f"[{session_id}] 开始处理音频: {audio_path}")
+
     ctx = new_context(method="asr.recognize")
     client = ASRClient(ctx=ctx)
-    
+
     has_ffmpeg = check_ffmpeg()
+    print(f"[{session_id}] ffmpeg可用: {has_ffmpeg}")
+
     local_file = None
-    need_cleanup = False
-    
+    temp_files = []
+
     try:
         # 步骤1: 获取本地音频文件
         if audio_path.startswith("http://") or audio_path.startswith("https://"):
-            # 从URL下载到临时文件
-            local_file = tempfile.mktemp(suffix=".tmp_audio")
-            success = download_file(audio_path, local_file)
-            if not success:
-                return json.dumps({
-                    "error": "音频文件下载失败",
-                    "hint": "请检查URL是否可访问，或文件是否超过100MB"
-                })
-            need_cleanup = True
-            print(f"[INFO] 已从URL下载音频到: {local_file}")
+            local_file = f"/tmp/audio_download_{session_id}.raw"
+            ok, msg = download_file(audio_path, local_file)
+            if not ok:
+                return json.dumps({"error": f"音频下载失败: {msg}"})
+            temp_files.append(local_file)
+            print(f"[{session_id}] {msg}")
         else:
+            if not os.path.exists(audio_path):
+                return json.dumps({"error": f"文件不存在: {audio_path}"})
             local_file = audio_path
-        
-        # 步骤2: 检查文件是否存在
-        if not os.path.exists(local_file):
-            return json.dumps({
-                "error": f"文件不存在: {local_file}",
-                "hint": "请检查音频文件路径是否正确"
-            })
-        
-        # 步骤3: 检查文件大小（ASR限制100MB）
+
+        # 步骤2: 检查文件
         file_size_mb = get_file_size_mb(local_file)
         if file_size_mb > 100:
-            return json.dumps({
-                "error": f"文件过大: {file_size_mb:.1f}MB，超过100MB限制",
-                "hint": "请压缩或分段处理音频"
-            })
-        print(f"[INFO] 音频文件大小: {file_size_mb:.1f}MB")
-        
-        # 步骤4: 如果ffmpeg可用，先转码为标准格式
+            return json.dumps({"error": f"文件过大: {file_size_mb:.1f}MB > 100MB限制"})
+        print(f"[{session_id}] 文件大小: {file_size_mb:.1f}MB")
+
+        # 步骤3: 用ffmpeg转码为标准WAV（关键步骤，解决ASR格式兼容问题）
         input_for_asr = local_file
-        
+        conversion_log = "未使用ffmpeg转码"
+
         if has_ffmpeg:
-            # 探测原音频信息
-            probe_info = probe_audio_info(local_file)
-            if probe_info:
-                streams = probe_info.get("streams", [])
-                if streams:
-                    s = streams[0]
-                    print(f"[INFO] 原音频: codec={s.get('codec_name')}, "
-                          f"sample_rate={s.get('sample_rate')}, "
-                          f"channels={s.get('channels')}")
-            
-            # 转码为标准格式
-            converted_file = tempfile.mktemp(suffix=".wav")
-            convert_ok = convert_audio_to_standard(local_file, converted_file)
-            
-            if convert_ok:
-                converted_size = get_file_size_mb(converted_file)
-                print(f"[INFO] ffmpeg转码成功: {converted_size:.1f}MB -> 16kHz/mono/16bit WAV")
-                
-                if converted_size <= 100:
-                    input_for_asr = converted_file
-                    if need_cleanup:
-                        # 如果是从URL下载的，删除原始文件
-                        try: os.remove(local_file)
-                        except: pass
-                    local_file = converted_file
-                    need_cleanup = True
-                else:
-                    print(f"[WARN] 转码后文件仍超过100MB({converted_size:.1f}MB)，使用原始文件")
-                    try: os.remove(converted_file)
-                    except: pass
+            converted_path = f"/tmp/audio_converted_{session_id}.wav"
+            ok, detail = convert_audio_with_ffmpeg(local_file, converted_path)
+            conversion_log = detail
+
+            if ok:
+                conv_size = get_file_size_mb(converted_path)
+                print(f"[{session_id}] ✅ ffmpeg转码成功: {converted_path} ({conv_size:.1f}MB)")
+                input_for_asr = converted_path
+                temp_files.append(converted_path)
             else:
-                print("[WARN] ffmpeg转码失败，使用原始文件")
-                try: os.remove(converted_file)
-                except: pass
+                print(f"[{session_id}] ❌ ffmpeg转码失败: {detail}，使用原始文件")
         else:
-            print("[INFO] ffmpeg不可用，直接使用原始文件（ASR服务端可能不支持某些格式）")
-        
-        # 步骤5: 读取音频并发送到ASR
+            print(f"[{session_id}] ffmpeg不可用，使用原始文件（ASR可能不支持某些格式）")
+
+        # 步骤4: 读取音频并发送到ASR
         with open(input_for_asr, "rb") as f:
             audio_data = f.read()
-            audio_base64 = base64.b64encode(audio_data).decode("utf-8")
-        
-        print(f"[INFO] 正在发送音频到ASR服务 (base64大小: {len(audio_base64)//1024}KB)...")
+
+        audio_base64 = base64.b64encode(audio_data).decode("utf-8")
+        b64_size_mb = len(audio_base64) / (1024 * 1024)
+        print(f"[{session_id}] 发送到ASR: {input_for_asr} (base64: {b64_size_mb:.1f}MB, 转码状态: {conversion_log})")
+
         text, data = client.recognize(uid=uid, base64_data=audio_base64)
-        
-        # 步骤6: 构建结果
+
+        # 步骤5: 构建结果
         duration = data.get("result", {}).get("duration", 0)
-        
+        utterances = data.get("result", {}).get("utterances", [])
+
         result = {
             "full_text": text,
             "duration": duration,
             "duration_seconds": duration / 1000 if duration else 0,
-            "segments": []
+            "segments": [],
+            "conversion_log": conversion_log
         }
-        
-        utterances = data.get("result", {}).get("utterances", [])
+
         for utterance in utterances:
             result["segments"].append({
                 "text": utterance.get("text", ""),
                 "start_time": utterance.get("start_time", 0),
                 "end_time": utterance.get("end_time", 0)
             })
-        
-        print(f"[INFO] ASR识别完成: {len(utterances)}段, 时长{duration/1000:.1f}秒")
+
+        print(f"[{session_id}] ASR完成: {len(utterances)}段, {duration/1000:.1f}秒")
         return json.dumps(result, ensure_ascii=False, indent=2)
-        
+
     except Exception as e:
         error_msg = str(e)
-        print(f"[ERROR] ASR识别异常: {error_msg}")
-        
-        # 提供更有帮助的错误提示
+        print(f"[{session_id}] ASR异常: {error_msg}")
+
+        # 根据异常信息提供精准提示
         hint = "未知错误"
-        if "timeout" in error_msg.lower():
-            hint = "音频处理超时，请缩小音频文件或分段处理"
-        elif "convert" in error_msg.lower() or "11103" in error_msg:
+        e_lower = error_msg.lower()
+
+        if "21109" in error_msg:
+            hint = ("ASR服务端处理音频时出现内部错误（错误码21109）。"
+                    "工具已自动用ffmpeg转码为16kHz/16bit/mono WAV标准格式，"
+                    "但仍处理失败。请检查音频文件是否有实际人声内容，"
+                    "或尝试截取较短片段重新处理。")
+        elif "11103" in error_msg or "convert" in e_lower:
             hint = "音频格式转换失败，请尝试用ffmpeg提前转码为16kHz/16bit/mono WAV"
-        elif "size" in error_msg.lower() or "limit" in error_msg.lower():
+        elif "timeout" in e_lower:
+            hint = "音频处理超时，请缩小音频文件或分段处理"
+        elif "size" in e_lower or "limit" in e_lower:
             hint = "文件超过大小限制（100MB）"
-        
+
         return json.dumps({
             "error": f"ASR识别失败: {error_msg}",
-            "hint": hint
+            "hint": hint,
+            "conversion_log": conversion_log if 'conversion_log' in dir() else "N/A"
         })
-        
+
     finally:
-        # 清理临时文件
-        if need_cleanup and local_file and os.path.exists(local_file):
+        # 清理临时文件（保留原始用户文件）
+        for f in temp_files:
             try:
-                os.remove(local_file)
+                if os.path.exists(f):
+                    os.remove(f)
+                    print(f"[{session_id}] 已清理临时文件: {f}")
             except:
                 pass
 
