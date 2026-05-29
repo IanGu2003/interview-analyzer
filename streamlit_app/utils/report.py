@@ -150,9 +150,9 @@ def generate_coded_report(
             for r in q_responses:
                 answer_text = r.get("text", "")
 
-                # LLM coding
+                # LLM coding (with Knowledge Base enhancement)
                 if client and answer_text:
-                    coded = llm_utils.code_response(
+                    coded = llm_utils.code_response_with_kb(
                         client, qtext, answer_text, model=model
                     )
                 else:

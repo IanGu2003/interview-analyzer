@@ -21,6 +21,7 @@ from utils import memory as mem
 from utils import asr as asr_utils
 from utils import llm_utils
 from utils import report
+from utils import knowledge_base as kb
 
 # ---------- Page Config ----------
 st.set_page_config(
@@ -45,6 +46,12 @@ if "questions" not in st.session_state:
     st.session_state.questions = []
 if "audio_file_name" not in st.session_state:
     st.session_state.audio_file_name = ""
+if "kb_loaded" not in st.session_state:
+    st.session_state.kb_loaded = False
+if "kb_stats" not in st.session_state:
+    st.session_state.kb_stats = {"total": 0, "categories": {}}
+if "kb_enabled" not in st.session_state:
+    st.session_state.kb_enabled = True
 
 # ---------- Default Questions ----------
 DEFAULT_QUESTIONS = [
@@ -107,6 +114,16 @@ with st.sidebar:
     st.caption("1️⃣ **原话版.xlsx** — 问题与回答一一对应")
     st.caption("2️⃣ **初步编码版.xlsx** — 含主题编码/关键词/情感")
 
+    # Knowledge Base status indicator
+    st.markdown("---")
+    kb_stats = st.session_state.kb_stats
+    if kb_stats["total"] > 0:
+        st.success(f"📚 知识库已加载 ({kb_stats['total']} 条目)")
+        for cat, count in kb_stats["categories"].items():
+            st.caption(f"  · {cat}: {count} 条")
+    else:
+        st.info("📚 知识库为空，前往「知识库管理」添加")
+
 
 # ---------- Main UI ----------
 st.title("🎙️ 访谈智能整理与分析系统")
@@ -118,7 +135,7 @@ st.markdown("""
 """)
 
 # ---------- Tabs ----------
-tab1, tab2, tab3 = st.tabs(["📤 上传与处理", "📋 访谈问题编辑", "❓ 使用说明"])
+tab1, tab2, tab3, tab4 = st.tabs(["📤 上传与处理", "📋 访谈问题编辑", "📚 知识库管理", "❓ 使用说明"])
 
 # ===== Tab 1: Upload & Process =====
 with tab1:
@@ -243,14 +260,15 @@ with tab1:
             status_text.success(f"✅ 转写完成：{len(transcript)} 字符")
             progress_bar.progress(50, text="转写完成")
 
-            # ---------- Step 3: LLM Analysis ----------
-            status_text.info("🔄 步骤3/5：LLM分析与语义匹配中...")
+            # ---------- Step 3: LLM Analysis (with KB) ----------
+            kb_status = "（知识库已启用）" if st.session_state.kb_stats["total"] > 0 else "（知识库为空）"
+            status_text.info(f"🔄 步骤3/5：LLM分析与语义匹配中 {kb_status}...")
             progress_bar.progress(60, text="LLM 语义分析中...")
 
             client = llm_utils.get_client(api_key, base_url=api_base)
 
-            # Extract answers and match to questions
-            matches = llm_utils.extract_answers_from_transcript(
+            # Extract answers and match to questions (KB-enhanced)
+            matches = llm_utils.extract_answers_with_kb(
                 client=client,
                 transcript=transcript,
                 questions=questions,
@@ -390,22 +408,189 @@ with tab2:
         st.success(f"✅ 已保存 {len(questions_editor)} 道问题")
 
 
-# ===== Tab 3: Usage Guide =====
+# ===== Tab 3: Knowledge Base Management =====
 with tab3:
+    st.subheader("📚 知识库管理")
+    st.markdown("""
+    上传**往年优秀访谈记录**和**专业术语表**，让 LLM 在语义匹配和主题编码时参考这些信息，
+    提高对领域特有表达的理解准确性和编码一致性。
+    """)
+
+    kb_check = st.session_state.kb_stats
+    if kb_check["total"] > 0:
+        st.success(f"✅ 当前知识库：{kb_check['total']} 条文档，{len(kb_check.get('categories', {}))} 个分类")
+
+    # ── Section 1: Upload past interview records ──
+    with st.expander("📄 上传优秀访谈记录", expanded=True):
+        st.markdown("上传过往项目中优秀的访谈记录文本文件（.txt / .md），系统会自动分段索引。")
+        interview_files = st.file_uploader(
+            "选择访谈记录文件（可多选）",
+            type=["txt", "md", "json"],
+            accept_multiple_files=True,
+            key="kb_interview_files",
+        )
+        if interview_files:
+            total_chunks = 0
+            for f in interview_files:
+                content = f.read().decode("utf-8", errors="replace")
+                kb_instance = kb.get_kb()
+                chunks = kb_instance.add_text(
+                    text=content,
+                    category="访谈案例",
+                    title=f.name,
+                    source="历史访谈",
+                )
+                total_chunks += chunks
+            if total_chunks > 0:
+                st.session_state.kb_stats = kb_instance.count()
+                st.session_state.kb_loaded = True
+                st.success(f"✅ 已导入 {len(interview_files)} 个文件，共 {total_chunks} 个片段")
+                st.rerun()
+
+        # Manual input
+        st.markdown("---")
+        st.markdown("**或手动输入一段访谈案例：**")
+        col_q, col_a = st.columns(2)
+        with col_q:
+            case_question = st.text_area("问题文本", key="kb_case_q", height=80,
+                                         placeholder="例如：你平时玩什么类型的游戏？")
+        with col_a:
+            case_answer = st.text_area("受访者回答", key="kb_case_a", height=80,
+                                       placeholder="例如：我主要玩王者荣耀和原神。")
+        if st.button("➕ 添加此案例到知识库", key="add_case_btn"):
+            if case_question and case_answer:
+                kb_instance = kb.get_kb()
+                kb_instance.add_interview_case(question=case_question, answer=case_answer)
+                st.session_state.kb_stats = kb_instance.count()
+                st.session_state.kb_loaded = True
+                st.success("✅ 案例已添加！")
+                st.rerun()
+            else:
+                st.warning("请同时填写问题和回答")
+
+    # ── Section 2: Glossary management ──
+    with st.expander("📖 专业术语与常用词汇表", expanded=True):
+        st.markdown("添加你研究领域的专业术语，帮助 LLM 更准确理解受访者的表达。")
+
+        # Add single term
+        col1, col2, col3 = st.columns([3, 5, 1])
+        with col1:
+            term = st.text_input("术语", placeholder="例如：DAU", key="kb_term")
+        with col2:
+            definition = st.text_input("解释", placeholder="例如：日活跃用户数", key="kb_def")
+        with col3:
+            if st.button("➕ 添加", key="add_term_btn"):
+                if term and definition:
+                    kb_instance = kb.get_kb()
+                    kb_instance.add_glossary_entry(term=term, definition=definition)
+                    st.session_state.kb_stats = kb_instance.count()
+                    st.session_state.kb_loaded = True
+                    st.success(f"✅ 已添加：{term}")
+                    st.rerun()
+                else:
+                    st.warning("请填写术语和解释")
+
+        # Batch upload glossary file
+        st.markdown("---")
+        st.markdown("**批量导入术语表（每行一个：`术语：解释`）**")
+        glossary_file = st.file_uploader(
+            "上传术语表文件 (.txt / .md)",
+            type=["txt", "md"],
+            key="kb_glossary_file",
+        )
+        if glossary_file:
+            content = glossary_file.read().decode("utf-8", errors="replace")
+            kb_instance = kb.get_kb()
+            count = 0
+            for line in content.strip().split("\n"):
+                line = line.strip()
+                if "：" in line:
+                    t, d = line.split("：", 1)
+                    kb_instance.add_glossary_entry(t.strip(), d.strip())
+                    count += 1
+                elif ":" in line:
+                    t, d = line.split(":", 1)
+                    kb_instance.add_glossary_entry(t.strip(), d.strip())
+                    count += 1
+            if count > 0:
+                st.session_state.kb_stats = kb_instance.count()
+                st.session_state.kb_loaded = True
+                st.success(f"✅ 已导入 {count} 个术语")
+                st.rerun()
+            else:
+                st.warning("未识别到有效术语，请确保格式为「术语：解释」每行一个")
+
+    # ── Section 3: View and manage ──
+    with st.expander("📋 查看知识库内容"):
+        kb_instance = kb.get_kb()
+        stats = kb_instance.count()
+        if stats["total"] == 0:
+            st.info("知识库为空，请先添加上面内容")
+        else:
+            st.write(f"**总计：{stats['total']} 条文档**")
+            for cat, cnt in stats.get("categories", {}).items():
+                st.write(f"- {cat}: {cnt} 条")
+
+            # Show all documents
+            if st.button("展开所有内容"):
+                for i, doc in enumerate(kb_instance.documents):
+                    with st.container():
+                        st.markdown(f"**{i+1}. [{doc['category']}] {doc['title']}**")
+                        st.caption(doc["text"][:200] + ("..." if len(doc["text"]) > 200 else ""))
+                    st.divider()
+
+    # ── Section 4: Danger zone ──
+    with st.expander("⚠️ 管理操作"):
+        col_del1, col_del2 = st.columns(2)
+        with col_del1:
+            cat_to_del = st.selectbox(
+                "删除特定分类",
+                options=["全部"] + list(kb.get_kb().count().get("categories", {}).keys()),
+            )
+            if st.button("🗑️ 删除选中的分类", type="secondary"):
+                if cat_to_del == "全部":
+                    kb.reset_kb()
+                    st.session_state.kb_stats = {"total": 0, "categories": {}}
+                    st.success("✅ 知识库已清空")
+                else:
+                    removed = kb.get_kb().remove_by_category(cat_to_del)
+                    st.session_state.kb_stats = kb.get_kb().count()
+                    st.success(f"✅ 已删除 {removed} 条 {cat_to_del}")
+                st.rerun()
+
+        with col_del2:
+            if st.button("🗑️ 清空整个知识库", type="primary"):
+                kb.reset_kb()
+                st.session_state.kb_stats = {"total": 0, "categories": {}}
+                st.success("✅ 知识库已清空")
+                st.rerun()
+
+
+# ===== Tab 4: Usage Guide =====
+with tab4:
     st.markdown("""
     ## 📖 使用说明
 
     ### 快速开始
     1. **左侧配置**：填写 API Base URL 和 API Key（支持 DeepSeek / OpenAI 等）
-    2. **上传音频**：上传包含受访者回答的访谈录音（.m4a, .mp3, .wav）
-    3. **编辑问题**：调整面试问题框架（支持增删改）
-    4. **点击分析**：系统自动完成转写 → 匹配 → 编码 → 生成报告
+    2. **知识库**：前往「知识库管理」上传往年访谈记录与术语表（可选但推荐）
+    3. **上传音频**：上传包含受访者回答的访谈录音（.m4a, .mp3, .wav）
+    4. **编辑问题**：调整面试问题框架（支持增删改）
+    5. **点击分析**：系统自动完成转写 → 匹配 → 编码 → 生成报告
 
     ### 双版本报告
     | 版本 | 内容 |
     |------|------|
     | **原话版** | 所有问题与受访者回答一一对应，未获取回答的问题黄色标注 |
     | **初步编码版** | 在原话基础上增加：主题编码、子编码、关键词、情感倾向 |
+
+    ### 📚 RAG 知识库说明
+    - **知识库作用**：在语义匹配和主题编码时，LLM 会参考你上传的过往访谈案例和专业术语
+    - **推荐内容**：
+      - 往年优秀访谈记录（存档关键问答对）
+      - 专业术语表（如 DAU、ARPU、留存率、核心玩法等）
+      - 常用词汇表（你研究领域特有的表达方式）
+    - **不依赖外部服务**：纯关键词检索，无需额外 API 或数据库
 
     ### 支持的API
     - **DeepSeek**: `https://api.deepseek.com/v1`
