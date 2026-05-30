@@ -130,21 +130,26 @@ def _submit_asr_task(client, app_key: str, audio_url: str,
     request.set_version('2019-02-28')
     request.set_action_name('SubmitTask')
     request.set_method('POST')
+    request.set_accept_format('json')
 
     task = {
         'app_key': app_key,
         'file_link': audio_url,
         'language_code': language,
     }
-    request.set_body(json.dumps(task))
+    request.set_content(json.dumps(task).encode('utf-8'))
 
     response = client.do_action_with_exception(request)
     result = json.loads(response)
 
-    if result.get('Status') != 'SUCCESS':
-        raise Exception(f"阿里云ASR提交任务失败: {result.get('Status')} - {result}")
+    if result.get('Status') == 'SUCCESS':
+        data = result.get('Data', {})
+        # TaskId might be in Data.TaskId or directly in root
+        task_id = data.get('TaskId') or result.get('TaskId', '')
+        if task_id:
+            return task_id
 
-    return result['Data']['TaskId']
+    raise Exception(f"阿里云ASR提交任务失败: {result.get('Status')} - {result}")
 
 
 def _get_task_result(client, task_id: str) -> dict:
@@ -156,6 +161,7 @@ def _get_task_result(client, task_id: str) -> dict:
     request.set_version('2019-02-28')
     request.set_action_name('GetTaskResult')
     request.set_method('GET')
+    request.set_accept_format('json')
     request.add_query_param('TaskId', task_id)
 
     response = client.do_action_with_exception(request)
@@ -211,7 +217,23 @@ def transcribe_with_aliyun(
             sentences = []
             full_text_parts = []
 
-            for item in result.get('Result', []):
+            # Result may be a dict with Sentences, or a list
+            raw_result = result.get('Result', [])
+            items = []
+            if isinstance(raw_result, dict):
+                items = raw_result.get('Sentences', [])
+            elif isinstance(raw_result, list):
+                items = raw_result
+            else:
+                # Try StatusText
+                status_text_result = result.get('StatusText', '')
+                if status_text_result:
+                    return {
+                        "full_text": status_text_result,
+                        "segments": [],
+                    }
+
+            for item in items:
                 text = item.get('Text', '')
                 sentences.append({
                     "text": text,
