@@ -41,6 +41,8 @@ dependencies = [
     "PyGObject==3.48.2",
     "streamlit>=1.40,<2",
     "openai>=1.60,<2",
+    "oss2>=2.19.1",
+    "aliyun-python-sdk-core>=2.16.0",
 ]
 
 [tool.uv]

@@ -105,35 +105,47 @@ with st.sidebar:
 
         st.divider()
         st.caption("🎤 **ASR 语音转写**")
-        st.caption("DeepSeek 不支持语音识别，需单独配置 OpenAI 兼容的 Whisper API")
 
-        asr_base = st.text_input(
-            "ASR API 地址",
-            value="https://api.openai.com/v1",
-            help="语音转写 API（需支持 Whisper 模型）",
-            placeholder="https://api.openai.com/v1",
-            key="asr_base",
+        asr_provider = st.radio(
+            "选择 ASR 服务商",
+            options=["OpenAI Whisper", "阿里云录音文件识别"],
+            horizontal=True,
+            key="asr_provider",
         )
-        asr_key = st.text_input(
-            "ASR API Key",
-            type="password",
-            help="语音转写的 API Key（可与上方不同）",
-            placeholder="sk-...",
-            key="asr_key",
-        )
-        whisper_model = st.text_input(
-            "Whisper 模型",
-            value="whisper-1",
-            help="用于语音转写的模型",
-            placeholder="whisper-1",
-            key="whisper_model",
-        )
+
+        if asr_provider == "OpenAI Whisper":
+            st.caption("需要 OpenAI 兼容的 Whisper API Key")
+            asr_base = st.text_input(
+                "ASR API 地址",
+                value="https://api.openai.com/v1",
+                placeholder="https://api.openai.com/v1",
+                key="asr_base",
+            )
+            asr_key = st.text_input(
+                "ASR API Key",
+                type="password",
+                placeholder="sk-...",
+                key="asr_key",
+            )
+            whisper_model = st.text_input(
+                "Whisper 模型",
+                value="whisper-1",
+                placeholder="whisper-1",
+                key="whisper_model",
+            )
+        else:
+            st.caption("需要阿里云 AccessKey + OSS + 智能语音交互服务")
+            ali_ak = st.text_input("AccessKey ID", key="ali_ak", placeholder="LTAI...")
+            ali_sk = st.text_input("AccessKey Secret", type="password", key="ali_sk", placeholder="...")
+            ali_oss_endpoint = st.text_input("OSS Endpoint", value="oss-cn-shanghai.aliyuncs.com", key="ali_oss_endpoint")
+            ali_oss_bucket = st.text_input("OSS Bucket 名称", key="ali_oss_bucket", placeholder="my-bucket")
+            ali_app_key = st.text_input("NLS AppKey", key="ali_app_key", placeholder="AppKey 在智能语音交互控制台获取")
 
     st.markdown("---")
     st.caption("💡 推荐配置")
     st.caption("🧠 LLM: DeepSeek (`deepseek-chat`)")
-    st.caption("🎤 ASR: OpenAI (`whisper-1` + API Key)")
-    st.caption("支持分开配置，各用各的 API")
+    st.caption("🎤 OpenAI Whisper: 最简单，填 Key 即用")
+    st.caption("🎤 阿里云ASR: 需 OSS + NLS 服务，适合大量音频")
 
     st.markdown("---")
     st.caption("📁 输出：每次处理将自动生成")
@@ -210,10 +222,14 @@ with tab1:
         elif st.session_state.processing:
             st.warning("正在处理中，请稍候...", icon="⏳")
 
-    # ASR key hint
-    asr_key_to_use = asr_key if asr_key else api_key
-    if asr_base != "https://api.deepseek.com/v1" or not asr_key:
-        st.caption(f"🎤 语音转写使用: {asr_base}")
+    # ASR status hint
+    asr_provider_display = st.session_state.get("asr_provider", "OpenAI Whisper")
+    if asr_provider_display == "OpenAI Whisper":
+        asr_base_val = st.session_state.get("asr_base", "https://api.openai.com/v1")
+        asr_key_val = st.session_state.get("asr_key", "")
+        st.caption(f"🎤 ASR: {asr_provider_display} ({asr_base_val})")
+    else:
+        st.caption(f"🎤 ASR: {asr_provider_display}（需 OSS + NLS）")
 
     if st.button(
         "🚀 开始分析",
@@ -270,16 +286,49 @@ with tab1:
             progress_bar.progress(20, text="准备调用语音转写...")
 
             # ---------- Step 2: ASR ----------
-            status_text.info("🔄 步骤2/5：语音转写中（Whisper API）...")
+            asr_provider = st.session_state.get("asr_provider", "OpenAI Whisper")
+            asr_label = "阿里云ASR" if asr_provider == "阿里云录音文件识别" else "Whisper API"
+            status_text.info(f"🔄 步骤2/5：语音转写中（{asr_label}）...")
             progress_bar.progress(30, text="语音转写中...")
 
-            asr_result = asr_utils.transcribe_with_whisper_api(
-                audio_path=wav_path,
-                api_key=asr_key if asr_key else api_key,
-                base_url=asr_base,
-                model=whisper_model,
-                language="zh",
-            )
+            if asr_provider == "阿里云录音文件识别":
+                # Check Alibaba Cloud deps
+                deps_ok, deps_msg = asr_utils.check_aliyun_asr_deps()
+                if not deps_ok:
+                    st.error(f"❌ {deps_msg}")
+                    st.stop()
+
+                ali_ak = st.session_state.get("ali_ak", "")
+                ali_sk = st.session_state.get("ali_sk", "")
+                ali_oss_endpoint = st.session_state.get("ali_oss_endpoint", "")
+                ali_oss_bucket = st.session_state.get("ali_oss_bucket", "")
+                ali_app_key = st.session_state.get("ali_app_key", "")
+
+                if not all([ali_ak, ali_sk, ali_oss_endpoint, ali_oss_bucket, ali_app_key]):
+                    st.error("❌ 请填写完整的阿里云 ASR 配置信息")
+                    st.stop()
+
+                asr_result = asr_utils.transcribe_with_aliyun(
+                    audio_path=wav_path,
+                    access_key_id=ali_ak,
+                    access_key_secret=ali_sk,
+                    oss_endpoint=ali_oss_endpoint,
+                    oss_bucket=ali_oss_bucket,
+                    nls_app_key=ali_app_key,
+                    language="zh-CN",
+                )
+            else:
+                asr_base = st.session_state.get("asr_base", "https://api.openai.com/v1")
+                asr_key = st.session_state.get("asr_key", "")
+                whisper_model = st.session_state.get("whisper_model", "whisper-1")
+
+                asr_result = asr_utils.transcribe_with_whisper_api(
+                    audio_path=wav_path,
+                    api_key=asr_key if asr_key else api_key,
+                    base_url=asr_base,
+                    model=whisper_model,
+                    language="zh",
+                )
 
             transcript = asr_result["full_text"]
             st.session_state.transcript = transcript
@@ -630,9 +679,21 @@ with tab4:
     - **智谱开放平台**: `https://open.bigmodel.cn/api/paas/v4`
 
     ### ⚠️ 重要：ASR 和 LLM 可以分开配置
-    - **LLM 用 DeepSeek**（分析和编码）+ **ASR 用 OpenAI**（语音转写）
-    - 只需要在左侧分别填上对应的 API 地址和 Key 即可
-    - ASR Key 不填时会自动复用 LLM 的 Key
+    - **LLM 用 DeepSeek**（分析和编码）+ **ASR 用 OpenAI Whisper**（语音转写）
+    - 或者 **LLM 用 DeepSeek + ASR 用阿里云录音文件识别**
+    - 在左侧「ASR 语音转写」处选择服务商并填写对应配置即可
+
+    ### 🎤 ASR 服务商说明
+
+    | 服务商 | 优点 | 需要配置 |
+    |--------|------|---------|
+    | **OpenAI Whisper** | 最简单，填 API Key 即用 | API Key + API 地址 |
+    | **阿里云录音文件识别** | 中文识别更准，适合大量音频 | AccessKey + OSS + NLS AppKey |
+
+    **阿里云配置获取：**
+    1. AccessKey：在阿里云控制台 → RAM 用户 → 创建 AccessKey
+    2. OSS：开通对象存储 OSS → 创建 Bucket → 获取 Endpoint
+    3. NLS AppKey：开通智能语音交互服务 → 创建项目 → 获取 AppKey
 
     ### 注意事项
     - ⚠️ 单声道录音中主持人与受访者混合，系统会自动识别提取受访者回答
