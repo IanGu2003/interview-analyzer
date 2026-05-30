@@ -80,34 +80,60 @@ with st.sidebar:
     st.markdown("---")
 
     with st.expander("🔑 API 设置", expanded=True):
+        st.caption("🤖 **LLM（分析和编码）**")
         api_base = st.text_input(
-            "API Base URL",
+            "LLM API 地址",
             value="https://api.deepseek.com/v1",
-            help="支持 OpenAI 兼容接口的 API 地址",
+            help="用于文本分析和编码的大模型 API",
             placeholder="https://api.deepseek.com/v1",
+            key="llm_base",
         )
         api_key = st.text_input(
-            "API Key",
+            "API Key（共用）",
             type="password",
-            help="请填写你的 API Key",
+            help="填一个有权限的 API Key",
             placeholder="sk-...",
+            key="api_key",
         )
         llm_model = st.text_input(
             "LLM 模型",
             value="deepseek-chat",
             help="用于文本分析和编码的大模型",
             placeholder="deepseek-chat",
+            key="llm_model",
+        )
+
+        st.divider()
+        st.caption("🎤 **ASR 语音转写**")
+        st.caption("DeepSeek 不支持语音识别，需单独配置 OpenAI 兼容的 Whisper API")
+
+        asr_base = st.text_input(
+            "ASR API 地址",
+            value="https://api.openai.com/v1",
+            help="语音转写 API（需支持 Whisper 模型）",
+            placeholder="https://api.openai.com/v1",
+            key="asr_base",
+        )
+        asr_key = st.text_input(
+            "ASR API Key",
+            type="password",
+            help="语音转写的 API Key（可与上方不同）",
+            placeholder="sk-...",
+            key="asr_key",
         )
         whisper_model = st.text_input(
             "Whisper 模型",
             value="whisper-1",
             help="用于语音转写的模型",
             placeholder="whisper-1",
+            key="whisper_model",
         )
 
     st.markdown("---")
-    st.caption("💡 支持 OpenAI 兼容接口的 API")
-    st.caption("已适配：DeepSeek、OpenAI、Azure OpenAI、智谱、百炼等")
+    st.caption("💡 推荐配置")
+    st.caption("🧠 LLM: DeepSeek (`deepseek-chat`)")
+    st.caption("🎤 ASR: OpenAI (`whisper-1` + API Key)")
+    st.caption("支持分开配置，各用各的 API")
 
     st.markdown("---")
     st.caption("📁 输出：每次处理将自动生成")
@@ -180,9 +206,14 @@ with tab1:
         if not audio_file:
             st.warning("请先上传录音文件", icon="⚠️")
         elif not api_key:
-            st.warning("请在左侧配置 API Key", icon="⚠️")
+            st.warning("请在左侧配置 LLM API Key", icon="⚠️")
         elif st.session_state.processing:
             st.warning("正在处理中，请稍候...", icon="⏳")
+
+    # ASR key hint
+    asr_key_to_use = asr_key if asr_key else api_key
+    if asr_base != "https://api.deepseek.com/v1" or not asr_key:
+        st.caption(f"🎤 语音转写使用: {asr_base}")
 
     if st.button(
         "🚀 开始分析",
@@ -244,8 +275,8 @@ with tab1:
 
             asr_result = asr_utils.transcribe_with_whisper_api(
                 audio_path=wav_path,
-                api_key=api_key,
-                base_url=api_base,
+                api_key=asr_key if asr_key else api_key,
+                base_url=asr_base,
                 model=whisper_model,
                 language="zh",
             )
@@ -593,11 +624,15 @@ with tab4:
     - **不依赖外部服务**：纯关键词检索，无需额外 API 或数据库
 
     ### 支持的API
-    - **DeepSeek**: `https://api.deepseek.com/v1`
-    - **OpenAI**: `https://api.openai.com/v1`
+    - **DeepSeek (LLM)**: `https://api.deepseek.com/v1` + 模型 `deepseek-chat`
+    - **OpenAI (ASR+LLM)**: `https://api.openai.com/v1` + 模型 `gpt-4o` / `whisper-1`
     - **Azure OpenAI**: 自定义 endpoint
     - **智谱开放平台**: `https://open.bigmodel.cn/api/paas/v4`
-    - **阿里云百炼**: 自定义 endpoint
+
+    ### ⚠️ 重要：ASR 和 LLM 可以分开配置
+    - **LLM 用 DeepSeek**（分析和编码）+ **ASR 用 OpenAI**（语音转写）
+    - 只需要在左侧分别填上对应的 API 地址和 Key 即可
+    - ASR Key 不填时会自动复用 LLM 的 Key
 
     ### 注意事项
     - ⚠️ 单声道录音中主持人与受访者混合，系统会自动识别提取受访者回答
