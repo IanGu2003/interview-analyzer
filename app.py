@@ -259,9 +259,34 @@ with tab1:
 
         # Start processing
         st.session_state.processing = True
-        progress_bar = st.progress(0, text="初始化...")
-        status_text = st.empty()
+        
+        # === 实时状态面板 ===
+        status_container = st.container(border=True)
+        with status_container:
+            col_prog, col_time = st.columns([3, 1])
+            with col_prog:
+                progress_bar = st.progress(0, text="⏳ 初始化...")
+            with col_time:
+                elapsed_placeholder = st.empty()
+                elapsed_placeholder.caption("⏱️ 0秒")
+            
+            log_container = st.container(height=200)
+            log_area = log_container.empty()
+            log_lines = []
+            
+            def add_log(emoji, msg):
+                nonlocal log_lines
+                from datetime import datetime
+                ts = datetime.now().strftime("%H:%M:%S")
+                log_lines.append(f"{ts}  {emoji} {msg}")
+                log_area.markdown("  \n".join(log_lines[-15:]))
 
+        import time as _time
+        _start_t = _time.time()
+        
+        def update_elapsed():
+            elapsed_placeholder.caption(f"⏱️ {int(_time.time() - _start_t)}秒")
+        
         try:
             # Save uploaded file
             suffix = Path(audio_file.name).suffix
@@ -270,10 +295,12 @@ with tab1:
             with open(audio_path, "wb") as f:
                 f.write(audio_file.getbuffer())
 
-            progress_bar.progress(5, text="音频已保存...")
+            add_log("📁", f"音频已保存: {audio_file.name} ({audio_file.size/1024:.0f}KB)")
+            progress_bar.progress(5, text="音频已保存")
+            update_elapsed()
 
             # ---------- Step 1: Audio Preprocessing ----------
-            status_text.info("🔄 步骤1/5：音频预处理...")
+            add_log("🔧", "步骤1/5: 音频预处理...")
             progress_bar.progress(10, text="音频预处理...")
 
             # Convert if not standard WAV
@@ -282,29 +309,30 @@ with tab1:
                 if asr_utils.check_ffmpeg():
                     wav_path = asr_utils.convert_to_standard_wav(audio_path)
                     if wav_path:
-                        status_text.info(f"✅ 音频已转为标准WAV格式")
+                        add_log("✅", "音频已转为标准WAV格式")
                     else:
-                        st.warning("⚠️ ffmpeg 转码失败，尝试直接使用原始文件")
+                        add_log("⚠️", "ffmpeg 转码失败，尝试直接使用原始文件")
                         wav_path = audio_path
                 else:
-                    st.warning("⚠️ 未检测到 ffmpeg，使用原始文件进行转写")
+                    add_log("⚠️", "未检测到 ffmpeg，使用原始文件")
                     wav_path = audio_path
             else:
                 wav_path = audio_path
 
             file_size_mb = asr_utils.get_file_size_mb(wav_path)
-            status_text.info(f"📊 音频大小: {file_size_mb:.1f}MB")
+            add_log("📊", f"音频大小: {file_size_mb:.1f}MB")
 
-            progress_bar.progress(20, text="准备调用语音转写...")
+            progress_bar.progress(20, text="准备调用语音转写")
+            update_elapsed()
 
             # ---------- Step 2: ASR ----------
             asr_provider = st.session_state.get("asr_provider", "OpenAI Whisper")
             asr_label = "阿里云ASR" if asr_provider == "阿里云录音文件识别" else "Whisper API"
-            status_text.info(f"🔄 步骤2/5：语音转写中（{asr_label}）...")
-            progress_bar.progress(30, text="语音转写中...")
+            add_log("🎤", f"步骤2/5: 语音转写中（{asr_label}）...")
+            progress_bar.progress(30, text="语音转写中（约1-5分钟）...")
+            update_elapsed()
 
             if asr_provider == "阿里云录音文件识别":
-                # Check Alibaba Cloud deps
                 deps_ok, deps_msg = asr_utils.check_aliyun_asr_deps()
                 if not deps_ok:
                     st.error(f"❌ {deps_msg}")
@@ -320,6 +348,12 @@ with tab1:
                     st.error("❌ 请填写完整的阿里云 ASR 配置信息")
                     st.stop()
 
+                # Create progress updater for Alibaba ASR
+                def asr_progress(msg):
+                    add_log("⏳", f"阿里云ASR: {msg}")
+                    progress_bar.progress(35, text=msg)
+                    update_elapsed()
+
                 asr_result = asr_utils.transcribe_with_aliyun(
                     audio_path=wav_path,
                     access_key_id=ali_ak,
@@ -328,11 +362,15 @@ with tab1:
                     oss_bucket=ali_oss_bucket,
                     nls_app_key=ali_app_key,
                     language="zh-CN",
+                    progress_callback=asr_progress,
                 )
             else:
                 asr_base = st.session_state.get("asr_base", "https://api.openai.com/v1")
                 asr_key = st.session_state.get("asr_key", "")
                 whisper_model = st.session_state.get("whisper_model", "whisper-1")
+
+                add_log("⏳", "调用 Whisper API 中（首次需下载模型，约30秒-2分钟）")
+                update_elapsed()
 
                 asr_result = asr_utils.transcribe_with_whisper_api(
                     audio_path=wav_path,
@@ -349,13 +387,15 @@ with tab1:
                 st.error("❌ 语音转写结果为空，请检查音频文件是否有效")
                 st.stop()
 
-            status_text.success(f"✅ 转写完成：{len(transcript)} 字符")
+            add_log("✅", f"转写完成：{len(transcript)} 字符")
             progress_bar.progress(50, text="转写完成")
+            update_elapsed()
 
             # ---------- Step 3: LLM Analysis (with KB) ----------
-            kb_status = "（知识库已启用）" if st.session_state.kb_stats["total"] > 0 else "（知识库为空）"
-            status_text.info(f"🔄 步骤3/5：LLM分析与语义匹配中 {kb_status}...")
-            progress_bar.progress(60, text="LLM 语义分析中...")
+            kb_status = "知识库已启用" if st.session_state.kb_stats["total"] > 0 else "知识库为空"
+            add_log("🧠", f"步骤3/5: LLM分析与语义匹配（{kb_status}）...")
+            progress_bar.progress(60, text="LLM 语义分析中（约30秒-1分钟）...")
+            update_elapsed()
 
             client = llm_utils.get_client(api_key, base_url=api_base)
 
@@ -366,6 +406,9 @@ with tab1:
                 questions=questions,
                 model=llm_model,
             )
+
+            add_log("✅", f"LLM 分析完成，共识别 {len(matches)} 个文本片段")
+            update_elapsed()
 
             # Store responses in memory
             interview_memory = mem.reset_memory()
@@ -398,12 +441,14 @@ with tab1:
                 "unanswered": total_questions - answered_qs,
             }
 
-            status_text.success(f"✅ 匹配完成：{matched_count} 条回答匹配到 {answered_qs} 个问题")
+            add_log("✅", f"匹配完成：{matched_count} 条回答匹配到 {answered_qs} 个问题")
             progress_bar.progress(80, text="匹配完成")
+            update_elapsed()
 
             # ---------- Step 4: Generate Reports ----------
-            status_text.info("🔄 步骤4/5：生成双版本报告...")
-            progress_bar.progress(85, text="生成报告（原话版）...")
+            add_log("📊", "步骤4/5: 生成双版本报告（原话版 + 编码版）...")
+            progress_bar.progress(85, text="生成原话版报告...")
+            update_elapsed()
 
             output_prefix = os.path.join(tmp_dir, f"interview_{datetime.now().strftime('%Y%m%d_%H%M%S')}")
 
@@ -414,6 +459,10 @@ with tab1:
                 client=client,
                 model=llm_model,
             )
+
+            add_log("✅", "原话版报告生成完成")
+            progress_bar.progress(92, text="生成编码版报告（LLM编码中）...")
+            update_elapsed()
 
             # Load files for download
             with open(raw_path, "rb") as f:
@@ -426,13 +475,15 @@ with tab1:
             st.session_state.raw_report_path = raw_path
             st.session_state.coded_report_path = coded_path
 
+            add_log("🎉", f"全部完成！耗时 {int(_time.time() - _start_t)} 秒")
             progress_bar.progress(100, text="✅ 全部完成！")
-            status_text.success("🎉 分析完成！")
+            elapsed_placeholder.caption(f"⏱️ {int(_time.time() - _start_t)}秒")
 
         except Exception as e:
             st.error(f"❌ 处理过程中发生错误: {e}")
             import traceback
             st.code(traceback.format_exc(), language="python")
+            add_log("❌", f"错误: {str(e)[:100]}")
         finally:
             st.session_state.processing = False
 
