@@ -275,7 +275,6 @@ with tab1:
             log_lines = []
             
             def add_log(emoji, msg):
-                nonlocal log_lines
                 from datetime import datetime
                 ts = datetime.now().strftime("%H:%M:%S")
                 log_lines.append(f"{ts}  {emoji} {msg}")
