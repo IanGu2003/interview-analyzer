@@ -373,9 +373,9 @@ with tab1:
                 ali_sk = st.session_state.get("ali_sk", "")
                 ali_oss_endpoint = st.session_state.get("ali_oss_endpoint", "")
                 ali_oss_bucket = st.session_state.get("ali_oss_bucket", "")
-                ali_app_key = st.session_state.get("ali_app_key", "")
+                ali_dashscope_key = st.session_state.get("ali_dashscope_key", "")
 
-                if not all([ali_ak, ali_sk, ali_oss_endpoint, ali_oss_bucket, ali_app_key]):
+                if not all([ali_ak, ali_sk, ali_oss_endpoint, ali_oss_bucket, ali_dashscope_key]):
                     st.error("❌ 请填写完整的阿里云 ASR 配置信息")
                     st.stop()
 
@@ -391,7 +391,7 @@ with tab1:
                     access_key_secret=ali_sk,
                     oss_endpoint=ali_oss_endpoint,
                     oss_bucket=ali_oss_bucket,
-                    dashscope_api_key=ali_app_key,
+                    dashscope_api_key=ali_dashscope_key,
                     progress_callback=asr_progress,
                 )
             else:
