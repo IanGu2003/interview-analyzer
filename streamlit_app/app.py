@@ -91,6 +91,7 @@ with st.sidebar:
         api_key = st.text_input(
             "API Key（共用）",
             type="password",
+            value=os.environ.get("LLM_API_KEY", ""),
             help="填一个有权限的 API Key",
             placeholder="sk-...",
             key="api_key",
@@ -135,11 +136,11 @@ with st.sidebar:
             )
         else:
             st.caption("需要阿里云 AccessKey + OSS + 智能语音交互服务")
-            ali_ak = st.text_input("AccessKey ID", key="ali_ak", placeholder="LTAI...")
-            ali_sk = st.text_input("AccessKey Secret", type="password", key="ali_sk", placeholder="...")
-            ali_oss_endpoint = st.text_input("OSS Endpoint", value="oss-cn-shanghai.aliyuncs.com", key="ali_oss_endpoint")
-            ali_oss_bucket = st.text_input("OSS Bucket 名称", key="ali_oss_bucket", placeholder="my-bucket")
-            ali_app_key = st.text_input("NLS AppKey", key="ali_app_key", placeholder="AppKey 在智能语音交互控制台获取")
+            ali_ak = st.text_input("AccessKey ID", value=os.environ.get("ALIYUN_AK", ""), key="ali_ak")
+            ali_sk = st.text_input("AccessKey Secret", type="password", value=os.environ.get("ALIYUN_SK", ""), key="ali_sk")
+            ali_oss_endpoint = st.text_input("OSS Endpoint", value=os.environ.get("ALIYUN_OSS_ENDPOINT", "oss-cn-hangzhou.aliyuncs.com"), key="ali_oss_endpoint")
+            ali_oss_bucket = st.text_input("OSS Bucket 名称", value=os.environ.get("ALIYUN_OSS_BUCKET", ""), key="ali_oss_bucket")
+            ali_app_key = st.text_input("NLS AppKey", value=os.environ.get("ALIYUN_NLS_APPKEY", ""), key="ali_app_key")
 
     st.markdown("---")
     st.caption("💡 推荐配置")
