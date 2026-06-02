@@ -120,26 +120,72 @@ def _upload_audio_to_oss(audio_path: str, bucket, prefix: str = "asr_temp/") -> 
     return url
 
 
+def _sign_acs(method: str, path: str, headers: dict,
+              ak_secret: str) -> str:
+    """Generate Alibaba Cloud REST API signature (acs format)"""
+    import hmac, hashlib, base64
+
+    accept = headers.get('Accept', '')
+    content_md5 = headers.get('Content-MD5', '')
+    content_type = headers.get('Content-Type', '')
+    date = headers.get('Date', '')
+
+    # Canonicalized headers: sort x-acs-* headers alphabetically (lowercase key)
+    acs_header_lines = []
+    for k, v in sorted(headers.items()):
+        lk = k.lower().strip()
+        if lk.startswith('x-acs-'):
+            acs_header_lines.append(f'{lk}:{v.strip()}')
+    canonicalized_headers = '\n'.join(acs_header_lines) + '\n' if acs_header_lines else ''
+
+    string_to_sign = f'{method}\n{accept}\n{content_md5}\n{content_type}\n{date}\n{canonicalized_headers}{path}'
+
+    h = hmac.new(
+        (ak_secret + '&').encode('utf-8'),
+        string_to_sign.encode('utf-8'),
+        hashlib.sha1,
+    )
+    return base64.b64encode(h.digest()).decode('utf-8')
+
+
 def _get_nls_token(access_key_id: str, access_key_secret: str,
                    region: str = "cn-shanghai") -> str:
-    """Get NLS authorization token via AcsClient"""
-    from aliyunsdkcore.client import AcsClient
-    from aliyunsdkcore.request import CommonRequest
+    """Get NLS authorization token via REST API with HMAC-SHA1 signing"""
+    import requests
+    import uuid
+    from datetime import datetime
 
-    client = AcsClient(access_key_id, access_key_secret, region)
-    request = CommonRequest()
-    request.set_domain('nls-meta.cn-shanghai.aliyuncs.com')
-    request.set_version('2018-05-18')
-    request.set_product('nls')
-    request.set_action_name('CreateToken')
-    request.set_method('POST')
-    request.set_accept_format('json')
+    host = f'nls-meta.{region}.aliyuncs.com'
+    path = '/pop/2018-05-18/tokens'
+    url = f'https://{host}{path}'
+    method = 'POST'
 
-    response = client.do_action_with_exception(request)
-    result = json.loads(response)
+    date_str = datetime.utcnow().strftime('%a, %d %b %Y %H:%M:%S GMT')
+    nonce = str(uuid.uuid4())
+    body = b''
+    content_md5 = base64.b64encode(hashlib.md5(body).digest()).decode('utf-8')
+
+    headers = {
+        'Accept': 'application/json',
+        'Content-Type': 'application/json',
+        'Content-MD5': content_md5,
+        'Date': date_str,
+        'x-acs-signature-nonce': nonce,
+        'x-acs-signature-version': '1.0',
+    }
+
+    signature = _sign_acs(method, path, headers, access_key_secret)
+    headers['Authorization'] = f'acs {access_key_id}:{signature}'
+
+    resp = requests.post(url, headers=headers, data=body, timeout=15)
+    if resp.status_code != 200:
+        raise Exception(
+            f"获取NLS Token失败 ({resp.status_code}): {resp.text}")
+
+    result = resp.json()
     token = result.get('Token', {}).get('Id', '')
     if not token:
-        raise Exception(f"获取NLS Token失败: {result}")
+        raise Exception(f"获取NLS Token失败: 返回中无Token字段: {result}")
     return token
 
 
