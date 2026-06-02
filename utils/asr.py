@@ -136,13 +136,20 @@ def _get_nls_token(access_key_id: str, access_key_secret: str,
     method = 'POST'
 
     # Build request headers for ROA signing
+    from datetime import datetime
+    import base64, hashlib
+    
+    date_str = datetime.utcnow().strftime('%a, %d %b %Y %H:%M:%S GMT')
+    body_md5 = base64.b64encode(hashlib.md5(b'').digest()).decode()
+    
     headers = {
         'Accept': 'application/json',
         'Content-Type': 'application/json',
+        'Date': date_str,
+        'Content-MD5': body_md5,
     }
 
     # Use SDK's built-in ROA signature composer (returns tuple: headers, string_to_sign)
-    # get_signature_headers(queries, access_key, secret, format, headers, uri_pattern, paths, method, signer)
     signed_headers, _str_to_sign = roa_signature_composer.get_signature_headers(
         queries={},
         access_key=access_key_id,
@@ -153,6 +160,12 @@ def _get_nls_token(access_key_id: str, access_key_secret: str,
         paths={},
         method=method,
     )
+
+    # ROA composer may not include Date/Content-MD5 in signed output, re-add them
+    signed_headers['Date'] = date_str
+    signed_headers['Content-MD5'] = body_md5
+    signed_headers['Content-Type'] = 'application/json'
+    signed_headers['Accept'] = 'application/json'
 
     resp = requests.post(url, headers=signed_headers, data=b'', timeout=15)
     if resp.status_code != 200:
