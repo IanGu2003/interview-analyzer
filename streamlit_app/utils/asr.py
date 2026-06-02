@@ -124,64 +124,37 @@ def _upload_audio_to_oss(audio_path: str, bucket, prefix: str = "asr_temp/") -> 
     return url
 
 
-def _sign_acs(method: str, path: str, headers: dict,
-              ak_secret: str) -> str:
-    """Generate Alibaba Cloud REST API signature (acs format)"""
-    import hmac, hashlib, base64
-
-    accept = headers.get('Accept', '')
-    content_md5 = headers.get('Content-MD5', '')
-    content_type = headers.get('Content-Type', '')
-    date = headers.get('Date', '')
-
-    # Canonicalized headers: sort x-acs-* headers alphabetically (lowercase key)
-    acs_header_lines = []
-    for k, v in sorted(headers.items()):
-        lk = k.lower().strip()
-        if lk.startswith('x-acs-'):
-            acs_header_lines.append(f'{lk}:{v.strip()}')
-    canonicalized_headers = '\n'.join(acs_header_lines) + '\n' if acs_header_lines else ''
-
-    string_to_sign = f'{method}\n{accept}\n{content_md5}\n{content_type}\n{date}\n{canonicalized_headers}{path}'
-
-    h = hmac.new(
-        (ak_secret + '&').encode('utf-8'),
-        string_to_sign.encode('utf-8'),
-        hashlib.sha1,
-    )
-    return base64.b64encode(h.digest()).decode('utf-8')
-
-
 def _get_nls_token(access_key_id: str, access_key_secret: str,
                    region: str = "cn-shanghai") -> str:
-    """Get NLS authorization token via REST API with HMAC-SHA1 signing"""
+    """Get NLS authorization token using SDK's built-in ROA signer"""
     import requests
-    import uuid
-    from datetime import datetime
+    from aliyunsdkcore.auth.composer import roa_signature_composer
 
     host = f'nls-meta.{region}.aliyuncs.com'
     path = '/pop/2018-05-18/tokens'
     url = f'https://{host}{path}'
     method = 'POST'
 
-    date_str = datetime.utcnow().strftime('%a, %d %b %Y %H:%M:%S GMT')
-    nonce = str(uuid.uuid4())
-    body = b''
-    content_md5 = base64.b64encode(hashlib.md5(body).digest()).decode('utf-8')
-
+    # Build request headers for ROA signing
     headers = {
         'Accept': 'application/json',
         'Content-Type': 'application/json',
-        'Content-MD5': content_md5,
-        'Date': date_str,
-        'x-acs-signature-nonce': nonce,
-        'x-acs-signature-version': '1.0',
     }
 
-    signature = _sign_acs(method, path, headers, access_key_secret)
-    headers['Authorization'] = f'acs {access_key_id}:{signature}'
+    # Use SDK's built-in ROA signature composer
+    # get_signature_headers(queries, access_key, secret, format, headers, uri_pattern, paths, method, signer)
+    signed_headers = roa_signature_composer.get_signature_headers(
+        queries={},
+        access_key=access_key_id,
+        secret=access_key_secret,
+        format='JSON',
+        headers=headers,
+        uri_pattern=path,
+        paths={},
+        method=method,
+    )
 
-    resp = requests.post(url, headers=headers, data=body, timeout=15)
+    resp = requests.post(url, headers=signed_headers, data=b'', timeout=15)
     if resp.status_code != 200:
         raise Exception(
             f"获取NLS Token失败 ({resp.status_code}): {resp.text}")
