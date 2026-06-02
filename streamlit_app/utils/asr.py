@@ -140,8 +140,10 @@ def transcribe_with_aliyun(
     filename = os.path.basename(audio_path)
     oss_key = f"asr_temp/{uuid.uuid4().hex}_{filename}"
     bucket.put_object_from_file(oss_key, audio_path)
-    # Use HTTPS URL (public readable or use signed URL)
+    # Generate signed URL and ensure it uses HTTPS
     audio_url = bucket.sign_url('GET', oss_key, 24 * 3600)
+    if audio_url.startswith("http://"):
+        audio_url = "https://" + audio_url[7:]
 
     # Step 2: Submit async ASR task
     if progress_callback:
