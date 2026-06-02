@@ -3,8 +3,12 @@ import os
 import uuid
 import json
 import time
+import base64
+import hashlib
+import hmac
 import tempfile
 from pathlib import Path
+from datetime import datetime
 from openai import OpenAI
 
 
