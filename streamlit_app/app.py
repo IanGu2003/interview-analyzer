@@ -14,6 +14,17 @@ from datetime import datetime
 
 import streamlit as st
 
+
+def _get_default(secret_key: str, env_key: str, fallback: str = "") -> str:
+    """获取配置默认值：Streamlit Secrets → 环境变量 → 兜底空值"""
+    try:
+        val = st.secrets.get(secret_key)
+        if val:
+            return val
+    except Exception:
+        pass
+    return os.environ.get(env_key, fallback)
+
 # Add parent to path for utils imports
 sys.path.insert(0, str(Path(__file__).parent))
 
@@ -91,7 +102,7 @@ with st.sidebar:
         api_key = st.text_input(
             "API Key（共用）",
             type="password",
-            value=os.environ.get("LLM_API_KEY", ""),
+            value=_get_default("LLM_API_KEY", "LLM_API_KEY"),
             help="填一个有权限的 API Key",
             placeholder="sk-...",
             key="api_key",
@@ -136,11 +147,11 @@ with st.sidebar:
             )
         else:
             st.caption("需要阿里云 AccessKey + OSS + 智能语音交互服务")
-            ali_ak = st.text_input("AccessKey ID", value=os.environ.get("ALIYUN_AK", ""), key="ali_ak")
-            ali_sk = st.text_input("AccessKey Secret", type="password", value=os.environ.get("ALIYUN_SK", ""), key="ali_sk")
-            ali_oss_endpoint = st.text_input("OSS Endpoint", value=os.environ.get("ALIYUN_OSS_ENDPOINT", "oss-cn-hangzhou.aliyuncs.com"), key="ali_oss_endpoint")
-            ali_oss_bucket = st.text_input("OSS Bucket 名称", value=os.environ.get("ALIYUN_OSS_BUCKET", ""), key="ali_oss_bucket")
-            ali_app_key = st.text_input("NLS AppKey", value=os.environ.get("ALIYUN_NLS_APPKEY", ""), key="ali_app_key")
+            ali_ak = st.text_input("AccessKey ID", value=_get_default("ALIYUN_AK", "ALIYUN_AK"), key="ali_ak")
+            ali_sk = st.text_input("AccessKey Secret", type="password", value=_get_default("ALIYUN_SK", "ALIYUN_SK"), key="ali_sk")
+            ali_oss_endpoint = st.text_input("OSS Endpoint", value=_get_default("ALIYUN_OSS_ENDPOINT", "ALIYUN_OSS_ENDPOINT", "oss-cn-hangzhou.aliyuncs.com"), key="ali_oss_endpoint")
+            ali_oss_bucket = st.text_input("OSS Bucket 名称", value=_get_default("ALIYUN_OSS_BUCKET", "ALIYUN_OSS_BUCKET"), key="ali_oss_bucket")
+            ali_app_key = st.text_input("NLS AppKey", value=_get_default("ALIYUN_NLS_APPKEY", "ALIYUN_NLS_APPKEY"), key="ali_app_key")
 
     st.markdown("---")
     st.caption("💡 推荐配置")
