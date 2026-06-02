@@ -180,7 +180,7 @@ with st.sidebar:
             ali_dashscope_key = st.text_input(
                 "DashScope API Key",
                 type="password",
-                value=_get_default("DASHSCOPE_API_KEY", "DASHSCOPE_API_KEY", "sk-"),
+                value=_get_default("DASHSCOPE_API_KEY", "DASHSCOPE_API_KEY", ""),
                 key="ali_dashscope_key",
                 help="从 https://bailian.console.aliyun.com/ → API-KEY管理 获取"
             )
