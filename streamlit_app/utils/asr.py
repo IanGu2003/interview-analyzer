@@ -213,6 +213,7 @@ def transcribe_with_aliyun(
     nls_app_key: str,
     region: str = "cn-shanghai",
     language: str = "zh-CN",
+    progress_callback: callable = None,
 ) -> dict:
     """Transcribe audio using Alibaba Cloud 录音文件识别
 
@@ -233,21 +234,29 @@ def transcribe_with_aliyun(
     """
 
     # Step 1: Upload audio to OSS
+    if progress_callback:
+        progress_callback("上传音频到OSS...")
     bucket = _get_oss_bucket(access_key_id, access_key_secret, oss_endpoint, oss_bucket)
     audio_url = _upload_audio_to_oss(audio_path, bucket)
     print(f"  音频已上传OSS: {audio_url}")
 
     # Step 2: Get NLS Token
+    if progress_callback:
+        progress_callback("获取NLS认证Token...")
     nls_token = _get_nls_token(access_key_id, access_key_secret, region)
 
     # Step 3: Submit ASR task
+    if progress_callback:
+        progress_callback("提交录音文件识别任务...")
     task_id = _submit_asr_task_rest(nls_token, nls_app_key, audio_url, language)
     print(f"  已提交ASR任务: {task_id}")
 
     # Step 4: Poll for result
-    max_attempts = 120  # ~6 minutes max
+    max_attempts = 120
     for attempt in range(max_attempts):
         time.sleep(3)
+        if progress_callback:
+            progress_callback(f"等待识别结果（{attempt * 3 + 3}秒）...")
         result = _get_task_result_rest(nls_token, task_id)
         status = result.get('Status', '')
 
