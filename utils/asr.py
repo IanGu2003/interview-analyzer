@@ -141,9 +141,9 @@ def _get_nls_token(access_key_id: str, access_key_secret: str,
         'Content-Type': 'application/json',
     }
 
-    # Use SDK's built-in ROA signature composer
+    # Use SDK's built-in ROA signature composer (returns tuple: headers, string_to_sign)
     # get_signature_headers(queries, access_key, secret, format, headers, uri_pattern, paths, method, signer)
-    signed_headers = roa_signature_composer.get_signature_headers(
+    signed_headers, _str_to_sign = roa_signature_composer.get_signature_headers(
         queries={},
         access_key=access_key_id,
         secret=access_key_secret,
