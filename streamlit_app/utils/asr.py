@@ -3,12 +3,8 @@ import os
 import uuid
 import json
 import time
-import base64
-import hashlib
-import hmac
 import tempfile
 from pathlib import Path
-from datetime import datetime
 from openai import OpenAI
 
 
@@ -103,131 +99,8 @@ def get_file_size_mb(path: str) -> float:
 
 
 # ═══════════════════════════════════════════════════════════════
-#  Alibaba Cloud (阿里云) ASR - 录音文件识别
+#  Alibaba Cloud (阿里云) ASR - 通过 DashScope（百炼）API
 # ═══════════════════════════════════════════════════════════════
-
-def _get_oss_bucket(access_key_id: str, access_key_secret: str,
-                    oss_endpoint: str, oss_bucket: str):
-    """Get OSS bucket client"""
-    import oss2
-    auth = oss2.Auth(access_key_id, access_key_secret)
-    return oss2.Bucket(auth, oss_endpoint, oss_bucket)
-
-
-def _upload_audio_to_oss(audio_path: str, bucket, prefix: str = "asr_temp/") -> str:
-    """Upload audio to OSS and return signed URL (24h expiry)"""
-    filename = os.path.basename(audio_path)
-    oss_key = f"{prefix}{uuid.uuid4().hex}_{filename}"
-    bucket.put_object_from_file(oss_key, audio_path)
-    # Generate signed URL with 24h expiry
-    url = bucket.sign_url('GET', oss_key, 24 * 3600)
-    return url
-
-
-def _get_nls_token(access_key_id: str, access_key_secret: str,
-                   region: str = "cn-shanghai") -> str:
-    """Get NLS authorization token using SDK's built-in ROA signer"""
-    import requests
-    from aliyunsdkcore.auth.composer import roa_signature_composer
-
-    host = f'nls-meta.{region}.aliyuncs.com'
-    path = '/pop/2018-05-18/tokens'
-    url = f'https://{host}{path}'
-    method = 'POST'
-
-    # Build request headers for ROA signing
-    from datetime import datetime
-    import base64, hashlib
-    
-    date_str = datetime.utcnow().strftime('%a, %d %b %Y %H:%M:%S GMT')
-    body_md5 = base64.b64encode(hashlib.md5(b'').digest()).decode()
-    
-    headers = {
-        'Accept': 'application/json',
-        'Content-Type': 'application/json',
-        'Date': date_str,
-        'Content-MD5': body_md5,
-    }
-
-    # Use SDK's built-in ROA signature composer (returns tuple: headers, string_to_sign)
-    signed_headers, _str_to_sign = roa_signature_composer.get_signature_headers(
-        queries={},
-        access_key=access_key_id,
-        secret=access_key_secret,
-        format='JSON',
-        headers=headers,
-        uri_pattern=path,
-        paths={},
-        method=method,
-    )
-
-    # ROA composer may not include Date/Content-MD5 in signed output, re-add them
-    signed_headers['Date'] = date_str
-    signed_headers['Content-MD5'] = body_md5
-    signed_headers['Content-Type'] = 'application/json'
-    signed_headers['Accept'] = 'application/json'
-
-    resp = requests.post(url, headers=signed_headers, data=b'', timeout=15)
-    if resp.status_code != 200:
-        raise Exception(
-            f"获取NLS Token失败 ({resp.status_code}): {resp.text}")
-
-    result = resp.json()
-    token = result.get('Token', {}).get('Id', '')
-    if not token:
-        raise Exception(f"获取NLS Token失败: 返回中无Token字段: {result}")
-    return token
-
-
-def _submit_asr_task_rest(nls_token: str, app_key: str, audio_url: str,
-                          language: str = "zh-CN") -> str:
-    """Submit recording file recognition task via REST API, returns task_id"""
-    import requests
-
-    url = "https://nls-meta.cn-shanghai.aliyuncs.com/api/v1/recog/asr"
-    headers = {
-        "X-NLS-Token": nls_token,
-        "Content-Type": "application/json",
-    }
-    payload = {
-        "app_key": app_key,
-        "file_link": audio_url,
-        "language_code": language,
-    }
-
-    resp = requests.post(url, json=payload, headers=headers, timeout=30)
-
-    if resp.status_code != 200:
-        raise Exception(
-            f"阿里云ASR提交任务失败 (HTTP {resp.status_code}): {resp.text[:500]}"
-        )
-
-    if not resp.text.strip():
-        raise Exception(
-            f"阿里云ASR提交任务失败: 响应体为空 (HTTP {resp.status_code}, "
-            f"token前10位: {nls_token[:10]}..., app_key: {app_key[:6]}...)"
-        )
-
-    result = resp.json()
-
-    if result.get("Status") == "SUCCESS":
-        task_id = result.get("Data", {}).get("TaskId", "")
-        if task_id:
-            return task_id
-
-    raise Exception(f"阿里云ASR提交任务失败: {result}")
-
-
-def _get_task_result_rest(nls_token: str, task_id: str) -> dict:
-    """Poll for task result via REST API"""
-    import requests
-
-    url = f"https://nls-meta.cn-shanghai.aliyuncs.com/api/v1/recog/asr?task_id={task_id}"
-    headers = {"X-NLS-Token": nls_token}
-
-    resp = requests.get(url, headers=headers, timeout=30)
-    return resp.json()
-
 
 def transcribe_with_aliyun(
     audio_path: str,
@@ -235,99 +108,92 @@ def transcribe_with_aliyun(
     access_key_secret: str,
     oss_endpoint: str,
     oss_bucket: str,
-    nls_app_key: str,
-    region: str = "cn-shanghai",
-    language: str = "zh-CN",
+    dashscope_api_key: str,
     progress_callback: callable = None,
 ) -> dict:
-    """Transcribe audio using Alibaba Cloud 录音文件识别
+    """Transcribe audio using Alibaba Cloud DashScope Paraformer ASR
 
-    流程：上传音频到OSS → 获取NLS Token → 提交任务 → 轮询获取结果
+    流程：
+    1. 上传音频到OSS
+    2. 调用 DashScope ASR API（Paraformer 模型）进行识别
 
     Args:
         audio_path: Path to audio file
-        access_key_id: 阿里云 AccessKey ID
+        access_key_id: 阿里云 AccessKey ID（用于OSS上传）
         access_key_secret: 阿里云 AccessKey Secret
-        oss_endpoint: OSS Endpoint, e.g. "oss-cn-shanghai.aliyuncs.com"
+        oss_endpoint: OSS Endpoint, e.g. "oss-cn-hangzhou.aliyuncs.com"
         oss_bucket: OSS Bucket name
-        nls_app_key: 智能语音交互 AppKey
-        region: 阿里云 region, default "cn-shanghai"
-        language: 语言代码, default "zh-CN"
+        dashscope_api_key: DashScope API Key（百炼平台获取）
+        progress_callback: Optional progress callback
 
     Returns:
         dict with full_text and segments
     """
+    import oss2
+    import requests
 
     # Step 1: Upload audio to OSS
     if progress_callback:
         progress_callback("上传音频到OSS...")
-    bucket = _get_oss_bucket(access_key_id, access_key_secret, oss_endpoint, oss_bucket)
-    audio_url = _upload_audio_to_oss(audio_path, bucket)
-    print(f"  音频已上传OSS: {audio_url}")
+    auth = oss2.Auth(access_key_id, access_key_secret)
+    bucket = oss2.Bucket(auth, oss_endpoint, oss_bucket)
+    filename = os.path.basename(audio_path)
+    oss_key = f"asr_temp/{uuid.uuid4().hex}_{filename}"
+    bucket.put_object_from_file(oss_key, audio_path)
+    # Use HTTPS URL (public readable or use signed URL)
+    audio_url = bucket.sign_url('GET', oss_key, 24 * 3600)
 
-    # Step 2: Get NLS Token
+    # Step 2: Call DashScope ASR API
     if progress_callback:
-        progress_callback("获取NLS认证Token...")
-    nls_token = _get_nls_token(access_key_id, access_key_secret, region)
+        progress_callback("调用DashScope语音识别...")
 
-    # Step 3: Submit ASR task
-    if progress_callback:
-        progress_callback("提交录音文件识别任务...")
-    task_id = _submit_asr_task_rest(nls_token, nls_app_key, audio_url, language)
-    print(f"  已提交ASR任务: {task_id}")
+    url = "https://dashscope.aliyuncs.com/api/v1/services/audio/asr/transcription"
+    headers = {
+        "Authorization": f"Bearer {dashscope_api_key}",
+        "Content-Type": "application/json",
+    }
+    payload = {
+        "model": "paraformer-v1",
+        "input": {
+            "file_urls": [audio_url],
+        },
+    }
 
-    # Step 4: Poll for result
-    max_attempts = 120
-    for attempt in range(max_attempts):
-        time.sleep(3)
-        if progress_callback:
-            progress_callback(f"等待识别结果（{attempt * 3 + 3}秒）...")
-        result = _get_task_result_rest(nls_token, task_id)
-        status = result.get('Status', '')
+    resp = requests.post(url, json=payload, headers=headers, timeout=60)
 
-        if status == 'SUCCESS':
-            # Parse recognition result
-            sentences = []
-            full_text_parts = []
+    if resp.status_code != 200:
+        raise Exception(
+            f"DashScope ASR调用失败 (HTTP {resp.status_code}): {resp.text[:500]}"
+        )
 
-            # Result may be a dict with Sentences, or a list
-            raw_result = result.get('Result', [])
-            items = []
-            if isinstance(raw_result, dict):
-                items = raw_result.get('Sentences', [])
-            elif isinstance(raw_result, list):
-                items = raw_result
-            else:
-                # Try StatusText
-                status_text_result = result.get('StatusText', '')
-                if status_text_result:
-                    return {
-                        "full_text": status_text_result,
-                        "segments": [],
-                    }
+    result = resp.json()
 
-            for item in items:
-                text = item.get('Text', '')
-                sentences.append({
-                    "text": text,
-                    "start": item.get('BeginTime', 0) / 1000,
-                    "end": item.get('EndTime', 0) / 1000,
-                    "channel": item.get('ChannelId', 0),
-                })
-                full_text_parts.append(text)
+    # Parse DashScope response format
+    # Response: {"output":{"usage":{"duration":...},"results":[{"text":"...","sentences":[...]}]}}
+    output = result.get("output", {})
+    usage = output.get("usage", {})
+    results = output.get("results", [])
 
-            return {
-                "full_text": "".join(full_text_parts),
-                "segments": sentences,
-            }
+    full_text_parts = []
+    sentences = []
 
-        elif status == 'FAIL':
-            error_msg = result.get('StatusText', '未知错误')
-            raise Exception(f"阿里云ASR识别失败: {error_msg}")
+    for result_item in results:
+        text = result_item.get("text", "")
+        full_text_parts.append(text)
 
-        # else RUNNING - continue polling
+        # Sentences within each result
+        for sent in result_item.get("sentences", []):
+            sentences.append({
+                "text": sent.get("text", ""),
+                "start": sent.get("begin_time", 0) / 1000,
+                "end": sent.get("end_time", 0) / 1000,
+                "channel": sent.get("channel_id", 0),
+            })
 
-    raise Exception("阿里云ASR识别超时（超过6分钟）")
+    return {
+        "full_text": "".join(full_text_parts),
+        "segments": sentences,
+    }
 
 
 def check_aliyun_asr_deps() -> tuple[bool, str]:
@@ -338,10 +204,10 @@ def check_aliyun_asr_deps() -> tuple[bool, str]:
     except ImportError:
         missing.append("oss2")
     try:
-        from aliyunsdkcore.client import AcsClient
+        import requests
     except ImportError:
-        missing.append("aliyun-python-sdk-core")
+        missing.append("requests")
 
     if missing:
-        return False, f"缺少依赖: {', '.join(missing)}。请在终端运行: pip install {' '.join(missing)}"
+        return False, f"缺少依赖: {', '.join(missing)}"
     return True, "依赖已就绪"
