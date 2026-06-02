@@ -196,6 +196,18 @@ def _submit_asr_task_rest(nls_token: str, app_key: str, audio_url: str,
     }
 
     resp = requests.post(url, json=payload, headers=headers, timeout=30)
+
+    if resp.status_code != 200:
+        raise Exception(
+            f"阿里云ASR提交任务失败 (HTTP {resp.status_code}): {resp.text[:500]}"
+        )
+
+    if not resp.text.strip():
+        raise Exception(
+            f"阿里云ASR提交任务失败: 响应体为空 (HTTP {resp.status_code}, "
+            f"token前10位: {nls_token[:10]}..., app_key: {app_key[:6]}...)"
+        )
+
     result = resp.json()
 
     if result.get("Status") == "SUCCESS":
