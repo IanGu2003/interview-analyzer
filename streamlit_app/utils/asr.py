@@ -120,52 +120,65 @@ def _upload_audio_to_oss(audio_path: str, bucket, prefix: str = "asr_temp/") -> 
     return url
 
 
-def _submit_asr_task(client, app_key: str, audio_url: str,
-                     language: str = "zh-CN") -> str:
-    """Submit recording file recognition task, returns task_id"""
+def _get_nls_token(access_key_id: str, access_key_secret: str,
+                   region: str = "cn-shanghai") -> str:
+    """Get NLS authorization token via AcsClient"""
+    from aliyunsdkcore.client import AcsClient
     from aliyunsdkcore.request import CommonRequest
 
+    client = AcsClient(access_key_id, access_key_secret, region)
     request = CommonRequest()
     request.set_domain('nls-meta.cn-shanghai.aliyuncs.com')
-    request.set_version('2019-02-28')
-    request.set_action_name('SubmitTask')
+    request.set_version('2018-05-18')
+    request.set_product('nls')
+    request.set_action_name('CreateToken')
     request.set_method('POST')
     request.set_accept_format('json')
 
-    task = {
-        'app_key': app_key,
-        'file_link': audio_url,
-        'language_code': language,
-    }
-    request.set_content(json.dumps(task).encode('utf-8'))
-
     response = client.do_action_with_exception(request)
     result = json.loads(response)
+    token = result.get('Token', {}).get('Id', '')
+    if not token:
+        raise Exception(f"获取NLS Token失败: {result}")
+    return token
 
-    if result.get('Status') == 'SUCCESS':
-        data = result.get('Data', {})
-        # TaskId might be in Data.TaskId or directly in root
-        task_id = data.get('TaskId') or result.get('TaskId', '')
+
+def _submit_asr_task_rest(nls_token: str, app_key: str, audio_url: str,
+                          language: str = "zh-CN") -> str:
+    """Submit recording file recognition task via REST API, returns task_id"""
+    import requests
+
+    url = "https://nls-meta.cn-shanghai.aliyuncs.com/api/v1/recog/asr"
+    headers = {
+        "X-NLS-Token": nls_token,
+        "Content-Type": "application/json",
+    }
+    payload = {
+        "app_key": app_key,
+        "file_link": audio_url,
+        "language_code": language,
+    }
+
+    resp = requests.post(url, json=payload, headers=headers, timeout=30)
+    result = resp.json()
+
+    if result.get("Status") == "SUCCESS":
+        task_id = result.get("Data", {}).get("TaskId", "")
         if task_id:
             return task_id
 
-    raise Exception(f"阿里云ASR提交任务失败: {result.get('Status')} - {result}")
+    raise Exception(f"阿里云ASR提交任务失败: {result}")
 
 
-def _get_task_result(client, task_id: str) -> dict:
-    """Poll for task result"""
-    from aliyunsdkcore.request import CommonRequest
+def _get_task_result_rest(nls_token: str, task_id: str) -> dict:
+    """Poll for task result via REST API"""
+    import requests
 
-    request = CommonRequest()
-    request.set_domain('nls-meta.cn-shanghai.aliyuncs.com')
-    request.set_version('2019-02-28')
-    request.set_action_name('GetTaskResult')
-    request.set_method('GET')
-    request.set_accept_format('json')
-    request.add_query_param('TaskId', task_id)
+    url = f"https://nls-meta.cn-shanghai.aliyuncs.com/api/v1/recog/asr?task_id={task_id}"
+    headers = {"X-NLS-Token": nls_token}
 
-    response = client.do_action_with_exception(request)
-    return json.loads(response)
+    resp = requests.get(url, headers=headers, timeout=30)
+    return resp.json()
 
 
 def transcribe_with_aliyun(
@@ -180,7 +193,7 @@ def transcribe_with_aliyun(
 ) -> dict:
     """Transcribe audio using Alibaba Cloud 录音文件识别
 
-    流程：上传音频到OSS → 提交录音文件识别任务 → 轮询获取结果
+    流程：上传音频到OSS → 获取NLS Token → 提交任务 → 轮询获取结果
 
     Args:
         audio_path: Path to audio file
@@ -195,21 +208,24 @@ def transcribe_with_aliyun(
     Returns:
         dict with full_text and segments
     """
-    from aliyunsdkcore.client import AcsClient
 
     # Step 1: Upload audio to OSS
     bucket = _get_oss_bucket(access_key_id, access_key_secret, oss_endpoint, oss_bucket)
     audio_url = _upload_audio_to_oss(audio_path, bucket)
+    print(f"  音频已上传OSS: {audio_url}")
 
-    # Step 2: Initialize AcsClient and submit task
-    client = AcsClient(access_key_id, access_key_secret, region)
-    task_id = _submit_asr_task(client, nls_app_key, audio_url, language)
+    # Step 2: Get NLS Token
+    nls_token = _get_nls_token(access_key_id, access_key_secret, region)
 
-    # Step 3: Poll for result
+    # Step 3: Submit ASR task
+    task_id = _submit_asr_task_rest(nls_token, nls_app_key, audio_url, language)
+    print(f"  已提交ASR任务: {task_id}")
+
+    # Step 4: Poll for result
     max_attempts = 120  # ~6 minutes max
     for attempt in range(max_attempts):
         time.sleep(3)
-        result = _get_task_result(client, task_id)
+        result = _get_task_result_rest(nls_token, task_id)
         status = result.get('Status', '')
 
         if status == 'SUCCESS':
