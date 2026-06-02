@@ -16,14 +16,40 @@ import streamlit as st
 
 
 def _get_default(secret_key: str, env_key: str, fallback: str = "") -> str:
-    """获取配置默认值：Streamlit Secrets → 环境变量 → 兜底空值"""
+    """获取配置默认值：Streamlit Secrets → 环境变量 → secrets.toml文件 → 兜底"""
+    # 1. Try Streamlit Secrets (for Streamlit Cloud)
     try:
         val = st.secrets.get(secret_key)
         if val:
             return val
     except Exception:
         pass
-    return os.environ.get(env_key, fallback)
+
+    # 2. Try environment variables
+    val = os.environ.get(env_key)
+    if val:
+        return val
+
+    # 3. Try reading from .streamlit/secrets.toml file
+    try:
+        import tomllib
+    except ImportError:
+        try:
+            import tomli as tomllib
+        except ImportError:
+            tomllib = None
+
+    if tomllib:
+        secrets_path = Path(__file__).parent / ".streamlit" / "secrets.toml"
+        if secrets_path.exists():
+            with open(secrets_path, "rb") as f:
+                data = tomllib.load(f)
+                val = data.get(secret_key, "")
+                if val:
+                    return val
+
+    # 4. Fallback
+    return fallback
 
 # Add parent to path for utils imports
 sys.path.insert(0, str(Path(__file__).parent))
