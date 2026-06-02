@@ -175,7 +175,7 @@ with st.sidebar:
             st.caption("需要阿里云 AccessKey + OSS + DashScope API Key")
             ali_ak = st.text_input("AccessKey ID", value=_get_default("ALIYUN_AK", "ALIYUN_AK", ""), key="ali_ak")
             ali_sk = st.text_input("AccessKey Secret", type="password", value=_get_default("ALIYUN_SK", "ALIYUN_SK", ""), key="ali_sk")
-            ali_oss_endpoint = st.text_input("OSS Endpoint", value=_get_default("ALIYUN_OSS_ENDPOINT", "ALIYUN_OSS_ENDPOINT", "oss-cn-hangzhou.aliyuncs.com"), key="ali_oss_endpoint")
+            ali_oss_endpoint = st.text_input("OSS Endpoint", value=_get_default("ALIYUN_OSS_ENDPOINT", "ALIYUN_OSS_ENDPOINT", "https://oss-cn-hangzhou.aliyuncs.com"), key="ali_oss_endpoint")
             ali_oss_bucket = st.text_input("OSS Bucket 名称", value=_get_default("ALIYUN_OSS_BUCKET", "ALIYUN_OSS_BUCKET", "zwbssss"), key="ali_oss_bucket")
             ali_dashscope_key = st.text_input(
                 "DashScope API Key",

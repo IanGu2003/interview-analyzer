@@ -136,9 +136,15 @@ def transcribe_with_aliyun(
     if progress_callback:
         progress_callback("上传音频到OSS...")
     auth = oss2.Auth(access_key_id, access_key_secret)
-    bucket = oss2.Bucket(auth, oss_endpoint, oss_bucket)
+    # Ensure HTTPS endpoint for OSS (Streamlit Cloud needs HTTPS)
+    https_endpoint = oss_endpoint
+    if not https_endpoint.startswith("http"):
+        https_endpoint = "https://" + https_endpoint
+    bucket = oss2.Bucket(auth, https_endpoint, oss_bucket)
     filename = os.path.basename(audio_path)
     oss_key = f"asr_temp/{uuid.uuid4().hex}_{filename}"
+    import socket
+    socket.setdefaulttimeout(120)
     bucket.put_object_from_file(oss_key, audio_path)
     # Generate signed URL and ensure it uses HTTPS
     audio_url = bucket.sign_url('GET', oss_key, 24 * 3600)
