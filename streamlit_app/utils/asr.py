@@ -115,7 +115,7 @@ def transcribe_with_aliyun(
 
     流程：
     1. 上传音频到OSS
-    2. 调用 DashScope ASR API（Paraformer 模型）进行识别
+    2. 调用 DashScope ASR API（transcription-async 异步接口）
 
     Args:
         audio_path: Path to audio file
@@ -143,11 +143,11 @@ def transcribe_with_aliyun(
     # Use HTTPS URL (public readable or use signed URL)
     audio_url = bucket.sign_url('GET', oss_key, 24 * 3600)
 
-    # Step 2: Call DashScope ASR API
+    # Step 2: Submit async ASR task
     if progress_callback:
-        progress_callback("调用DashScope语音识别...")
+        progress_callback("提交DashScope异步识别任务...")
 
-    url = "https://dashscope.aliyuncs.com/api/v1/services/audio/asr/transcription"
+    submit_url = "https://dashscope.aliyuncs.com/api/v1/services/audio/asr/transcription-async"
     headers = {
         "Authorization": f"Bearer {dashscope_api_key}",
         "Content-Type": "application/json",
@@ -159,40 +159,75 @@ def transcribe_with_aliyun(
         },
     }
 
-    resp = requests.post(url, json=payload, headers=headers, timeout=60)
-
-    if resp.status_code != 200:
+    resp = requests.post(submit_url, json=payload, headers=headers, timeout=30)
+    if resp.status_code not in (200, 202):
         raise Exception(
-            f"DashScope ASR调用失败 (HTTP {resp.status_code}): {resp.text[:500]}"
+            f"DashScope ASR提交失败 (HTTP {resp.status_code}): {resp.text[:500]}"
         )
 
     result = resp.json()
+    task_id = result.get("output", {}).get("task_id")
+    if not task_id:
+        raise Exception(f"DashScope未返回task_id: {resp.text[:300]}")
 
-    # Parse DashScope response format
-    # Response: {"output":{"usage":{"duration":...},"results":[{"text":"...","sentences":[...]}]}}
-    output = result.get("output", {})
-    usage = output.get("usage", {})
-    results = output.get("results", [])
+    # Step 3: Poll for completion
+    query_url = f"{submit_url}/{task_id}"
+    poll_start = time.time()
 
-    full_text_parts = []
-    sentences = []
+    while True:
+        elapsed = int(time.time() - poll_start)
+        if progress_callback:
+            progress_callback(f"等待识别结果 ({elapsed}秒)...")
 
-    for result_item in results:
-        text = result_item.get("text", "")
-        full_text_parts.append(text)
+        resp = requests.get(query_url, headers=headers, timeout=30)
+        if resp.status_code != 200:
+            raise Exception(f"查询任务失败 (HTTP {resp.status_code}): {resp.text[:300]}")
 
-        # Sentences within each result
-        for sent in result_item.get("sentences", []):
-            sentences.append({
-                "text": sent.get("text", ""),
-                "start": sent.get("begin_time", 0) / 1000,
-                "end": sent.get("end_time", 0) / 1000,
-                "channel": sent.get("channel_id", 0),
-            })
+        status_result = resp.json()
+        status = status_result.get("output", {}).get("task_status", "")
+
+        if status == "SUCCEEDED":
+            break
+        elif status == "FAILED":
+            msg = status_result.get("output", {}).get("message", "未知错误")
+            raise Exception(f"DashScope ASR识别失败: {msg}")
+        elif status in ("PENDING", "RUNNING"):
+            if elapsed > 600:
+                raise Exception("DashScope ASR超时（超过10分钟）")
+            # Adaptive polling interval
+            sleep_time = 5 if elapsed < 60 else 10
+            time.sleep(sleep_time)
+            continue
+        else:
+            raise Exception(f"DashScope未知状态: {status}")
+
+    # Step 4: Get result
+    if progress_callback:
+        progress_callback("获取识别结果...")
+
+    result_url = f"{query_url}/result"
+    resp = requests.get(result_url, headers=headers, timeout=30)
+    if resp.status_code != 200:
+        raise Exception(f"获取识别结果失败 (HTTP {resp.status_code}): {resp.text[:300]}")
+
+    result_data = resp.json()
+    output = result_data.get("output", {})
+    transcription = output.get("results", [{}])[0] if output.get("results") else {}
+    full_text = transcription.get("text", "")
+    sentences_raw = transcription.get("sentences", [])
+
+    segments = []
+    for sent in sentences_raw:
+        segments.append({
+            "text": sent.get("text", ""),
+            "start": sent.get("begin_time", 0) / 1000,
+            "end": sent.get("end_time", 0) / 1000,
+            "channel": sent.get("channel_id", 0),
+        })
 
     return {
-        "full_text": "".join(full_text_parts),
-        "segments": sentences,
+        "full_text": full_text,
+        "segments": segments,
     }
 
 
