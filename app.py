@@ -172,18 +172,24 @@ with st.sidebar:
                 key="whisper_model",
             )
         else:
-            st.caption("需要阿里云 AccessKey + OSS + 智能语音交互服务")
+            st.caption("需要阿里云 AccessKey + OSS + DashScope API Key")
             ali_ak = st.text_input("AccessKey ID", value=_get_default("ALIYUN_AK", "ALIYUN_AK", ""), key="ali_ak")
             ali_sk = st.text_input("AccessKey Secret", type="password", value=_get_default("ALIYUN_SK", "ALIYUN_SK", ""), key="ali_sk")
             ali_oss_endpoint = st.text_input("OSS Endpoint", value=_get_default("ALIYUN_OSS_ENDPOINT", "ALIYUN_OSS_ENDPOINT", "oss-cn-hangzhou.aliyuncs.com"), key="ali_oss_endpoint")
             ali_oss_bucket = st.text_input("OSS Bucket 名称", value=_get_default("ALIYUN_OSS_BUCKET", "ALIYUN_OSS_BUCKET", "zwbssss"), key="ali_oss_bucket")
-            ali_app_key = st.text_input("NLS AppKey", value=_get_default("ALIYUN_NLS_APPKEY", "ALIYUN_NLS_APPKEY", "I6NX8uB7ZkVTSPo9"), key="ali_app_key")
+            ali_dashscope_key = st.text_input(
+                "DashScope API Key",
+                type="password",
+                value=_get_default("DASHSCOPE_API_KEY", "DASHSCOPE_API_KEY", "sk-"),
+                key="ali_dashscope_key",
+                help="从 https://bailian.console.aliyun.com/ → API-KEY管理 获取"
+            )
 
     st.markdown("---")
     st.caption("💡 推荐配置")
     st.caption("🧠 LLM: DeepSeek (`deepseek-chat`)")
     st.caption("🎤 OpenAI Whisper: 最简单，填 Key 即用")
-    st.caption("🎤 阿里云ASR: 需 OSS + NLS 服务，适合大量音频")
+    st.caption("🎤 阿里云ASR: 需 OSS + DashScope API Key（百炼平台获取）")
 
     st.markdown("---")
     st.caption("📁 输出：每次处理将自动生成")
@@ -385,8 +391,7 @@ with tab1:
                     access_key_secret=ali_sk,
                     oss_endpoint=ali_oss_endpoint,
                     oss_bucket=ali_oss_bucket,
-                    nls_app_key=ali_app_key,
-                    language="zh-CN",
+                    dashscope_api_key=ali_app_key,
                     progress_callback=asr_progress,
                 )
             else:
