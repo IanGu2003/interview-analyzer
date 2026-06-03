@@ -290,7 +290,7 @@ with tab1:
     if st.button(
         "🚀 开始分析",
         type="primary",
-        use_container_width=True,
+        width='stretch',
         disabled=not can_process,
     ):
         # Parse questions
@@ -576,7 +576,7 @@ with tab1:
                 data=st.session_state.raw_report_bytes,
                 file_name=f"访谈报告_原话版_{datetime.now().strftime('%Y%m%d')}.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                use_container_width=True,
+                width='stretch',
             )
 
         with dl_col2:
@@ -585,7 +585,7 @@ with tab1:
                 data=st.session_state.coded_report_bytes,
                 file_name=f"访谈报告_初步编码版_{datetime.now().strftime('%Y%m%d')}.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                use_container_width=True,
+                width='stretch',
             )
 
         # Show transcript preview
@@ -606,7 +606,7 @@ with tab2:
             "question_text": st.column_config.TextColumn("问题文本", width="large"),
         },
         num_rows="dynamic",
-        use_container_width=True,
+        width='stretch',
         hide_index=True,
     )
 
