@@ -1,4 +1,4 @@
-"""Audio Speech Recognition - supports local Whisper, OpenAI Whisper API, and Alibaba Cloud ASR"""
+"""Audio Speech Recognition - supports OpenAI Whisper API and Alibaba Cloud ASR"""
 import os
 import uuid
 import json
@@ -52,64 +52,6 @@ def transcribe_with_whisper_api(
             })
 
     return result
-
-
-def transcribe_with_local_whisper(
-    audio_path: str,
-    model_size: str = "medium",
-    language: str = "zh",
-    progress_callback: callable = None,
-) -> dict:
-    """Transcribe audio using local faster-whisper model (no API key needed)
-
-    Args:
-        audio_path: Path to audio file
-        model_size: Model size (tiny, base, small, medium, large, large-v2, large-v3)
-        language: Language code (zh, en, etc.)
-        progress_callback: Optional progress callback
-
-    Returns:
-        dict with full_text and segments
-    """
-    from faster_whisper import WhisperModel
-
-    if progress_callback:
-        progress_callback(f"加载Whisper模型 ({model_size})...")
-
-    # Use int8 computation for CPU compatibility
-    model = WhisperModel(model_size, device="cpu", compute_type="int8")
-
-    if progress_callback:
-        progress_callback("正在转写音频...")
-
-    segments, info = model.transcribe(audio_path, language=language, beam_size=5)
-
-    result = {
-        "full_text": "",
-        "segments": [],
-    }
-
-    full_text_parts = []
-    for seg in segments:
-        full_text_parts.append(seg.text)
-        result["segments"].append({
-            "text": seg.text,
-            "start": seg.start,
-            "end": seg.end,
-        })
-
-    result["full_text"] = " ".join(full_text_parts).strip()
-
-    return result
-
-
-def check_local_whisper() -> tuple[bool, str]:
-    """Check if local whisper dependencies are available"""
-    try:
-        from faster_whisper import WhisperModel
-        return True, "本地Whisper就绪"
-    except ImportError:
-        return False, "缺少 faster-whisper 依赖"
 
 
 def check_ffmpeg() -> bool:

@@ -146,23 +146,12 @@ with st.sidebar:
 
         asr_provider = st.radio(
             "选择 ASR 服务商",
-            options=["本地Whisper模型（推荐）", "OpenAI Whisper", "阿里云录音文件识别"],
+            options=["OpenAI Whisper", "阿里云录音文件识别"],
             horizontal=True,
             key="asr_provider",
         )
 
-        if asr_provider == "本地Whisper模型（推荐）":
-            st.success("✅ 本地Whisper模型，无需API Key，即开即用")
-            st.caption("首次使用会下载模型（~500MB），之后无需联网")
-            whisper_size = st.selectbox(
-                "Whisper 模型大小",
-                options=["tiny", "base", "small", "medium", "large"],
-                index=3,  # medium
-                help="越大越准但越慢；medium 推荐平衡",
-                key="whisper_size",
-            )
-
-        elif asr_provider == "OpenAI Whisper":
+        if asr_provider == "OpenAI Whisper":
             st.caption("需要 OpenAI 兼容的 Whisper API Key")
             asr_base = st.text_input(
                 "ASR API 地址",
@@ -199,9 +188,8 @@ with st.sidebar:
     st.markdown("---")
     st.caption("💡 推荐配置")
     st.caption("🧠 LLM: DeepSeek (`deepseek-chat`)")
-    st.caption("🎤 本地Whisper: 无需API Key，推荐优先使用")
     st.caption("🎤 OpenAI Whisper: 需API Key，速度快")
-    st.caption("🎤 阿里云ASR: 需 OSS + DashScope API Key")
+    st.caption("🎤 阿里云ASR: 需 OSS + DashScope API Key（国内速度快）")
 
     st.markdown("---")
     st.caption("📁 输出：每次处理将自动生成")
@@ -369,36 +357,13 @@ with tab1:
             update_elapsed()
 
             # ---------- Step 2: ASR ----------
-            asr_provider = st.session_state.get("asr_provider", "本地Whisper模型（推荐）")
-            asr_label = "本地Whisper" if asr_provider == "本地Whisper模型（推荐）" else ("阿里云ASR" if asr_provider == "阿里云录音文件识别" else "Whisper API")
+            asr_provider = st.session_state.get("asr_provider", "OpenAI Whisper")
+            asr_label = "阿里云ASR" if asr_provider == "阿里云录音文件识别" else "Whisper API"
             add_log("🎤", f"步骤2/5: 语音转写中（{asr_label}）...")
             progress_bar.progress(30, text="语音转写中（约1-5分钟）...")
             update_elapsed()
 
-            if asr_provider == "本地Whisper模型（推荐）":
-                deps_ok, deps_msg = asr_utils.check_local_whisper()
-                if not deps_ok:
-                    st.error(f"❌ {deps_msg}")
-                    st.stop()
-
-                whisper_size = st.session_state.get("whisper_size", "medium")
-
-                def local_asr_progress(msg):
-                    add_log("⏳", f"本地Whisper: {msg}")
-                    progress_bar.progress(35, text=msg)
-                    update_elapsed()
-
-                add_log("⏳", f"本地Whisper转写中（模型: {whisper_size}）")
-                update_elapsed()
-
-                asr_result = asr_utils.transcribe_with_local_whisper(
-                    audio_path=wav_path,
-                    model_size=whisper_size,
-                    language="zh",
-                    progress_callback=local_asr_progress,
-                )
-
-            elif asr_provider == "阿里云录音文件识别":
+            if asr_provider == "阿里云录音文件识别":
                 deps_ok, deps_msg = asr_utils.check_aliyun_asr_deps()
                 if not deps_ok:
                     st.error(f"❌ {deps_msg}")
