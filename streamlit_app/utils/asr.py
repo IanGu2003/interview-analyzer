@@ -1,4 +1,4 @@
-"""Audio Speech Recognition - supports OpenAI Whisper API and Alibaba Cloud ASR"""
+"""Audio Speech Recognition - supports local Whisper, OpenAI Whisper API, and Alibaba Cloud ASR"""
 import os
 import uuid
 import json
@@ -52,6 +52,64 @@ def transcribe_with_whisper_api(
             })
 
     return result
+
+
+def transcribe_with_local_whisper(
+    audio_path: str,
+    model_size: str = "medium",
+    language: str = "zh",
+    progress_callback: callable = None,
+) -> dict:
+    """Transcribe audio using local faster-whisper model (no API key needed)
+
+    Args:
+        audio_path: Path to audio file
+        model_size: Model size (tiny, base, small, medium, large, large-v2, large-v3)
+        language: Language code (zh, en, etc.)
+        progress_callback: Optional progress callback
+
+    Returns:
+        dict with full_text and segments
+    """
+    from faster_whisper import WhisperModel
+
+    if progress_callback:
+        progress_callback(f"加载Whisper模型 ({model_size})...")
+
+    # Use int8 computation for CPU compatibility
+    model = WhisperModel(model_size, device="cpu", compute_type="int8")
+
+    if progress_callback:
+        progress_callback("正在转写音频...")
+
+    segments, info = model.transcribe(audio_path, language=language, beam_size=5)
+
+    result = {
+        "full_text": "",
+        "segments": [],
+    }
+
+    full_text_parts = []
+    for seg in segments:
+        full_text_parts.append(seg.text)
+        result["segments"].append({
+            "text": seg.text,
+            "start": seg.start,
+            "end": seg.end,
+        })
+
+    result["full_text"] = " ".join(full_text_parts).strip()
+
+    return result
+
+
+def check_local_whisper() -> tuple[bool, str]:
+    """Check if local whisper dependencies are available"""
+    try:
+        from faster_whisper import WhisperModel
+        return True, "本地Whisper就绪"
+    except ImportError:
+        return False, "缺少 faster-whisper 依赖"
 
 
 def check_ffmpeg() -> bool:
@@ -136,7 +194,7 @@ def transcribe_with_aliyun(
     if progress_callback:
         progress_callback("上传音频到OSS...")
     auth = oss2.Auth(access_key_id, access_key_secret)
-    # Ensure HTTPS endpoint for OSS (Streamlit Cloud needs HTTPS)
+    # Ensure HTTPS endpoint for OSS
     https_endpoint = oss_endpoint
     if not https_endpoint.startswith("http"):
         https_endpoint = "https://" + https_endpoint
@@ -202,7 +260,6 @@ def transcribe_with_aliyun(
         elif status in ("PENDING", "RUNNING"):
             if elapsed > 600:
                 raise Exception("DashScope ASR超时（超过10分钟）")
-            # Adaptive polling interval
             sleep_time = 5 if elapsed < 60 else 10
             time.sleep(sleep_time)
             continue
