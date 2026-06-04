@@ -30,3 +30,4 @@ coverage/
 coverage.xml
 htmlcov/
 .coverage.streamlit/secrets.toml
+.cozeproj/reduction
