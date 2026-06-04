@@ -79,12 +79,14 @@ def load_prompt(name: str, version: str = "v2") -> str:
     return _FALLBACK_CACHE[cache_key]
 
 
-def render_prompt(template: str, kb_context: str = "") -> str:
-    """Simple template renderer for prompt with optional KB context
+def render_prompt(template: str, **kwargs) -> str:
+    """Render prompt template, replacing {{PLACEHOLDER}} with values
     
     Supports:
-    - {% if kb_context %}...{{ kb_context }}...{% endif %}
+    - {% if kb_context %}...{{ kb_context }}...{% endif %}  (legacy)
+    - {{VAR_NAME}} replacement with any keyword argument
     """
+    # Handle legacy conditional KB context block
     if "{% if kb_context %}" in template:
         parts = template.split("{% if kb_context %}")
         before = parts[0]
@@ -93,11 +95,18 @@ def render_prompt(template: str, kb_context: str = "") -> str:
         inner = inner_and_after[0]
         after = inner_and_after[1] if len(inner_and_after) > 1 else ""
         
-        if kb_context:
-            rendered_inner = inner.replace("{{ kb_context }}", kb_context)
-            return before + rendered_inner + after
+        kb = kwargs.get("kb_context", "")
+        if kb:
+            rendered_inner = inner.replace("{{ kb_context }}", kb)
+            template = before + rendered_inner + after
         else:
-            return before + after
+            template = before + after
+    
+    # Replace all {{VAR}} placeholders with provided values
+    for key, value in kwargs.items():
+        placeholder = "{{" + key.upper() + "}}"
+        template = template.replace(placeholder, str(value))
+    
     return template
 
 
@@ -125,9 +134,56 @@ def llm_chat(
     return resp.choices[0].message.content or ""
 
 
-# ── Prompt Version: Semantic Matching ──────────────────────────────
+# ── JSON Parsing ──────────────────────────────────────────────────
 
-_EXTRACT_PROMPT_VERSION = "v2"  # Change here to switch prompt versions
+
+def _parse_json_array(content: str) -> list:
+    """Parse JSON array from LLM response, stripping markdown if needed"""
+    text = content.strip()
+    # Remove markdown code block if present
+    if "```json" in text:
+        text = text.split("```json")[1]
+        if "```" in text:
+            text = text.split("```")[0]
+    elif "```" in text:
+        text = text.split("```")[1]
+        if "```" in text:
+            text = text.split("```")[0]
+    
+    text = text.strip()
+    if text.startswith("["):
+        try:
+            return json.loads(text)
+        except json.JSONDecodeError:
+            pass
+    return []
+
+
+def _parse_json_object(content: str) -> dict | None:
+    """Parse JSON object from LLM response, stripping markdown if needed"""
+    text = content.strip()
+    # Remove markdown code block if present
+    if "```json" in text:
+        text = text.split("```json")[1]
+        if "```" in text:
+            text = text.split("```")[0]
+    elif "```" in text:
+        text = text.split("```")[1]
+        if "```" in text:
+            text = text.split("```")[0]
+    
+    text = text.strip()
+    if text.startswith("{"):
+        try:
+            return json.loads(text)
+        except json.JSONDecodeError:
+            pass
+    return None
+
+
+# ═══════════════════════════════════════════════════════════════
+#  Core Functions (v1 prompts) - Backward Compat
+# ═══════════════════════════════════════════════════════════════
 
 
 def extract_answers_from_transcript(
@@ -195,12 +251,13 @@ def code_response(
 
 
 def clean_text(client: OpenAI, text: str, model: str = "gpt-4o") -> str:
-    """Clean filler words from text"""
-    system_prompt = load_prompt("clean_text", "v1")
+    """Clean filler words from text using v2 prompt"""
+    template = load_prompt("clean_text", "v2")
+    system_prompt = render_prompt(template, TEXT=text)
 
     messages = [
         {"role": "system", "content": system_prompt},
-        {"role": "user", "content": f"清理语气词：{text}"},
+        {"role": "user", "content": "请输出 JSON。"},
     ]
     return llm_chat(client, messages, model=model, temperature=0.1, max_tokens=500)
 
@@ -229,24 +286,24 @@ def extract_answers_with_kb(
         [f"{q['question_id']}: {q['question_text']}" for q in questions]
     )
 
-    # Build KB context
-    kb_context = _build_kb_context(transcript + "\n" + q_text, top_k=6)
+    # Build KB context section (or empty string)
+    kb_raw = _build_kb_context(transcript + "\n" + q_text, top_k=6)
+    kb_section = ""
+    if kb_raw:
+        kb_section = "📚 **知识库参考信息**（以下为过往编码案例和专业术语，请参照保持编码风格一致）：\n" + kb_raw
 
-    # Load v2 template and render with KB context
+    # Load v2 template and render with all placeholders
     template = load_prompt("extract_answers", "v2")
-    system_prompt = render_prompt(template, kb_context=kb_context)
-
-    user_prompt = f"""访谈问题：
-{q_text}
-
-访谈转写全文：
-{transcript}
-
-请提取所有受访者回答并匹配到对应问题。"""
+    system_prompt = render_prompt(
+        template,
+        KB_CONTEXT_SECTION=kb_section,
+        QUESTIONS=q_text,
+        TRANSCRIPT=transcript,
+    )
 
     messages = [
         {"role": "system", "content": system_prompt},
-        {"role": "user", "content": user_prompt},
+        {"role": "user", "content": "请输出 JSON 数组。"},
     ]
 
     content = llm_chat(client, messages, model=model, temperature=0.1, max_tokens=4000)
@@ -256,27 +313,31 @@ def extract_answers_with_kb(
 
 def code_response_with_kb(
     client: OpenAI,
+    q_id: str,
     question_text: str,
     answer_text: str,
     model: str = "gpt-4o",
 ) -> dict:
-    """Perform preliminary coding with Knowledge Base enhancement (v2)"""
-    kb_context = _build_kb_context(
-        f"{question_text} {answer_text}",
-        top_k=4,
-    )
+    """Perform KB-enhanced preliminary coding on a single answer (v2)"""
+    # Build KB context section
+    kb_raw = _build_kb_context(question_text + "\n" + answer_text, top_k=5)
+    kb_section = ""
+    if kb_raw:
+        kb_section = "📚 **知识库参考信息**（以下为过往编码案例和专业术语，请参照保持编码风格一致）：\n" + kb_raw
 
+    # Load v2 template and render with all placeholders
     template = load_prompt("code_response", "v2")
-    system_prompt = render_prompt(template, kb_context=kb_context)
-
-    user_prompt = f"""问题：{question_text}
-回答：{answer_text}
-
-请对这个回答进行初步编码。"""
+    system_prompt = render_prompt(
+        template,
+        KB_CONTEXT_SECTION=kb_section,
+        Q_ID=q_id,
+        QUESTION_TEXT=question_text,
+        ANSWER_TEXT=answer_text,
+    )
 
     messages = [
         {"role": "system", "content": system_prompt},
-        {"role": "user", "content": user_prompt},
+        {"role": "user", "content": "请输出 JSON。"},
     ]
 
     content = llm_chat(client, messages, model=model, temperature=0.1, max_tokens=1000)
@@ -293,34 +354,46 @@ def code_response_with_kb(
     }
 
 
-# ═══════════════════════════════════════════════════════════════
-#  JSON Parsing Utilities
-# ═══════════════════════════════════════════════════════════════
-
-
-def _parse_json_array(text: str) -> list:
-    """Try to parse a JSON array from LLM response"""
-    try:
-        return json.loads(text)
-    except json.JSONDecodeError:
-        match = re.search(r'\[[\s\S]*\]', text, re.DOTALL)
-        if match:
-            try:
-                return json.loads(match.group())
-            except json.JSONDecodeError:
-                pass
-    return []
-
-
-def _parse_json_object(text: str) -> dict | None:
-    """Try to parse a JSON object from LLM response"""
-    try:
-        return json.loads(text)
-    except json.JSONDecodeError:
-        match = re.search(r'\{[\s\S]*\}', text, re.DOTALL)
-        if match:
-            try:
-                return json.loads(match.group())
-            except json.JSONDecodeError:
-                pass
-    return None
+def analysis_with_kb(
+    client: OpenAI,
+    transcript: str,
+    questions: list[dict],
+    model: str = "gpt-4o",
+) -> tuple[list[dict], list[dict]]:
+    """Full analysis pipeline: extract answers + code each answer (v2)
+    
+    Returns:
+        Tuple of (matched_answers, coded_results)
+    """
+    # Step 1: Extract answers
+    answers = extract_answers_with_kb(client, transcript, questions, model=model)
+    
+    # Step 2: Code each answer
+    coded = []
+    for ans in answers:
+        q_id = ans.get("question_id", "")
+        if q_id in ("OFF_TOPIC", ""):
+            continue
+        
+        # Find matching question text
+        q_text = ""
+        for q in questions:
+            if q.get("question_id") == q_id:
+                q_text = q.get("question_text", "")
+                break
+        
+        result = code_response_with_kb(
+            client,
+            q_id=q_id,
+            question_text=q_text,
+            answer_text=ans.get("cleaned_text", ans.get("original_text", "")),
+            model=model,
+        )
+        coded.append({
+            "question_id": q_id,
+            "original_text": ans.get("original_text", ""),
+            "cleaned_text": ans.get("cleaned_text", ""),
+            "code_result": result,
+        })
+    
+    return answers, coded

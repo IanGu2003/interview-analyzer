@@ -1,36 +1,64 @@
-# Prompt 修改日志 (Changelog)
+# Prompt 版本变更记录
 
-## v2 — KB增强版 (2025-06)
+## v3 (2025-06-03)
 
-### 变更内容
-| Prompt | 改动 | 原因 | 效果 |
-|--------|------|------|------|
-| `extract_answers` | 新增知识库上下文注入段（`{% if kb_context %}`） | 利用往年访谈案例提升领域术语匹配准确率 | 匹配准确率预估提升10-15% |
-| `code_response` | 新增知识库上下文注入段 | 确保编码风格与历史案例一致 | 编码一致性显著提升 |
-| `clean_text` | 无变化 | — | — |
+**修改内容：**
+- `extract_answers`: 重写为"服务于用户研究的中文访谈分析助手"定位，增加：
+  - 更严格的"不准捏造"约束（original_text 必须逐字出现）
+  - 识别主持人 vs 受访者的具体线索
+  - 更精细的 score 评分标准（0.4/0.6/0.85 分档）
+  - OFF_TOPIC 机制（不属于任何题目时不硬塞）
+  - `{{KB_CONTEXT_SECTION}}` 占位符支持知识库注入
+  - 详细示例（含误判防范说明）
+- `code_response`: 重构为"质性研究编码助手"，增加：
+  - 方法论原则（紧贴数据、数据驱动、一段可多码）
+  - 双类型编码（descriptive + in_vivo）
+  - confidence 三档评分标准（high/medium/low）
+  - 字段约束（candidate_codes 1-3 条、sentiment n/a 兜底）
+  - `{{Q_ID}}`、`{{QUESTION_TEXT}}`、`{{ANSWER_TEXT}}` 结构化占位符
+  - `{{KB_CONTEXT_SECTION}}` 支持知识库注入
+  - 保留 human_decision/human_code/note 供研究者复核
+- `clean_text`: 重写为"极度克制的中文文本清理助手"，增加：
+  - 可删除内容的精确枚举（不可扩展）
+  - 绝对禁止事项清单
+  - "那个/就是/然后"的歧义判断规则（指代 vs 填充）
+  - `removals` 字段记录删除了什么
+  - 3 个边界示例（含"那个"指代保留案例）
+  - `{{TEXT}}` 占位符
 
-### 文件变更
-- `prompts/v1/extract_answers.txt` → `prompts/v2/extract_answers.txt`：增加 KB 上下文注入逻辑
-- `prompts/v1/code_response.txt` → `prompts/v2/code_response.txt`：增加 KB 上下文注入逻辑
-- `prompts/v2/clean_text.txt`：与 v1 一致
+**改动原因：**
+- 用户在测试中发现 v2 输出不够稳定：编码太粗糙、匹配太宽松、清理不够克制
+- 需要更严格的约束来提升下游报告质量
+- 需要支持研究者复核流程（human_* 字段）
+
+**效果预期：**
+- 语义匹配 precision 提升（OFF_TOPIC 减少误判）
+- 编码质量提升（不再出现"未分类/待确认"兜底）
+- 清理更克制（减少误删语义内容）
 
 ---
 
-## v1 — 基础版 (2025-05)
+## v2 (2025-06-03)
 
-### Prompt 清单
-| Prompt | 行数 | 作用 |
-|--------|------|------|
-| `extract_answers` | ~15行 | 从单声道录音转写文本中提取受访者回答，匹配到结构化问题，清理语气词 |
-| `code_response` | ~12行 | 对单个回答进行质性研究编码（一级编码、二级编码、关键词、情感倾向） |
-| `clean_text` | ~1行 | 纯文本清理：去除填充词和语气词 |
+**修改内容：**
+- 抽取 prompt 为独立文件，存放在 `prompts/v2/` 目录
+- `extract_answers`: 增加知识库上下文注入能力（`{% if kb_context %}` 块）
+- `code_response`: 增加知识库上下文注入能力
+- `clean_text`: 同 v1
 
-### 关键设计决策
-1. **JSON 输出格式强制约束**：要求 LLM 输出纯 JSON，配合正则 fallback 解析，语义匹配解析成功率约 72%
-2. **单声道录音策略**：提示词明确指出主持人与受访者对话混合，要求只提取受访者内容
-3. **简短回答保护**：明确提示「1-20个字不要忽略」，防止短回应被过滤
-4. **score 置信度字段**：让 LLM 自行评估匹配质量，方便下游过滤低质量结果
+**改动原因：**
+- 引入 RAG 知识库后，需要让 LLM 在匹配和编码时参考历史案例
+- 需要 prompt 版本化管理（从代码中解耦）
 
-### 已知问题
-- 无知识库支持，领域术语匹配不稳定
-- 编码风格随 LLM 输出波动，跨文件一致性差
+**效果：**
+- 带知识库时编码风格更一致
+
+---
+
+## v1 (2025-05-20)
+
+**初始版本：**
+- 基本语义匹配（extract_answers）
+- 基础编码（theme_code + sub_code + keywords + sentiment）
+- 简单文本清理（删除语气词）
+- prompt 硬编码在 `utils/llm_utils.py` 中

@@ -153,7 +153,7 @@ def generate_coded_report(
                 # LLM coding (with Knowledge Base enhancement)
                 if client and answer_text:
                     coded = llm_utils.code_response_with_kb(
-                        client, qtext, answer_text, model=model
+                        client, q_id=qid, question_text=qtext, answer_text=answer_text, model=model
                     )
                 else:
                     coded = {
