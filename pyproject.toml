@@ -1,0 +1,25 @@
+[project]
+name = "interview-analyzer"
+version = "1.0.0"
+description = "Interview Intelligence Organization & Analysis Agent"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+authors = [
+    {name = "Ian Gu"},
+]
+keywords = ["interview", "analysis", "nlp", "asr", "langchain", "streamlit"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["streamlit_app"]
+markers = [
+    "slow: marks tests as slow (deselect with '-m \"not slow\"'",
+]
+
+[tool.coverage.run]
+source = ["streamlit_app/utils"]
+omit = ["*/tests/*"]
+
+[tool.coverage.report]
+show_missing = true

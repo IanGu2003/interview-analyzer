@@ -1,0 +1,24 @@
+version: "3.9"
+
+services:
+  interview-analyzer:
+    build:
+      context: ./streamlit_app
+      dockerfile: Dockerfile
+    container_name: interview-analyzer
+    ports:
+      - "8501:8501"
+    environment:
+      - LLM_API_KEY=${LLM_API_KEY:-}
+      - LLM_BASE_URL=${LLM_BASE_URL:-https://api.deepseek.com/v1}
+      - LLM_MODEL=${LLM_MODEL:-deepseek-chat}
+      - STREAMLIT_SERVER_MAX_UPLOAD_SIZE=200
+    volumes:
+      - ./streamlit_app:/app
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8501/_stcore/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
