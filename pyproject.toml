@@ -23,3 +23,7 @@ omit = ["*/tests/*"]
 
 [tool.coverage.report]
 show_missing = true
+[tool.uv]
+[[tool.uv.index]]
+url = "https://mirrors.aliyun.com/pypi/simple/"
+default = true
