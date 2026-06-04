@@ -8,6 +8,7 @@ import json
 import re
 from openai import OpenAI
 from .knowledge_base import get_kb
+from .telemetry import llm_chat_with_telemetry, verify_quote_in_transcript, verify_quote_in_answer
 
 
 # ── Prompt Versioning ──────────────────────────────────────────────
@@ -124,7 +125,7 @@ def llm_chat(
     temperature: float = 0.1,
     max_tokens: int = 2000,
 ) -> str:
-    """Simple LLM chat completion"""
+    """Simple LLM chat completion (direct call, no telemetry)"""
     resp = client.chat.completions.create(
         model=model,
         messages=messages,
@@ -263,7 +264,7 @@ def clean_text(client: OpenAI, text: str, model: str = "gpt-4o") -> str:
 
 
 # ═══════════════════════════════════════════════════════════════
-#  Knowledge-Base Enhanced Functions (v2 prompts)
+#  Knowledge-Base Enhanced Functions (v2 prompts) + Telemetry
 # ═══════════════════════════════════════════════════════════════
 
 
@@ -281,7 +282,11 @@ def extract_answers_with_kb(
     questions: list[dict],
     model: str = "gpt-4o",
 ) -> list[dict]:
-    """Extract answers from transcript with Knowledge Base enhancement (v2)"""
+    """Extract answers from transcript with Knowledge Base enhancement (v2)
+
+    Telemetry: logs latency, tokens, JSON parse status per call.
+    Contract check: verifies each extracted original_text exists in transcript.
+    """
     q_text = "\n".join(
         [f"{q['question_id']}: {q['question_text']}" for q in questions]
     )
@@ -306,9 +311,24 @@ def extract_answers_with_kb(
         {"role": "user", "content": "请输出 JSON 数组。"},
     ]
 
-    content = llm_chat(client, messages, model=model, temperature=0.1, max_tokens=4000)
+    content = llm_chat_with_telemetry(
+        client, messages,
+        model=model,
+        call_type="extract_answers",
+        temperature=0.1,
+        max_tokens=4000,
+        metadata={
+            "question_count": len(questions),
+            "transcript_length": len(transcript),
+        },
+    )
 
-    return _parse_json_array(content)
+    extracted = _parse_json_array(content)
+
+    # ── Contract Check: verify quotes exist in transcript ──
+    extracted = verify_quote_in_transcript(extracted, transcript)
+
+    return extracted
 
 
 def code_response_with_kb(
@@ -318,7 +338,11 @@ def code_response_with_kb(
     answer_text: str,
     model: str = "gpt-4o",
 ) -> dict:
-    """Perform KB-enhanced preliminary coding on a single answer (v2)"""
+    """Perform KB-enhanced preliminary coding on a single answer (v2)
+
+    Telemetry: logs latency, tokens per answer coded.
+    Contract check: verifies source_quote exists in answer_text.
+    """
     # Build KB context section
     kb_raw = _build_kb_context(question_text + "\n" + answer_text, top_k=5)
     kb_section = ""
@@ -340,17 +364,32 @@ def code_response_with_kb(
         {"role": "user", "content": "请输出 JSON。"},
     ]
 
-    content = llm_chat(client, messages, model=model, temperature=0.1, max_tokens=1000)
+    content = llm_chat_with_telemetry(
+        client, messages,
+        model=model,
+        call_type="code_response",
+        temperature=0.1,
+        max_tokens=1000,
+        metadata={
+            "question_id": q_id,
+            "answer_length": len(answer_text),
+        },
+    )
 
     result = _parse_json_object(content)
+
+    # ── Contract Check: verify source_quote exists in answer ──
     if result:
+        result = verify_quote_in_answer(result, answer_text)
         return result
+    
     return {
         "theme_code": "未分类",
         "sub_code": "待确认",
         "keywords": [],
         "sentiment": "中性",
         "memo": "编码失败，请人工核对",
+        "quote_verified": False,
     }
 
 
@@ -378,22 +417,19 @@ def analysis_with_kb(
         # Find matching question text
         q_text = ""
         for q in questions:
-            if q.get("question_id") == q_id:
-                q_text = q.get("question_text", "")
+            if q["question_id"] == q_id:
+                q_text = q["question_text"]
                 break
         
-        result = code_response_with_kb(
-            client,
-            q_id=q_id,
-            question_text=q_text,
-            answer_text=ans.get("cleaned_text", ans.get("original_text", "")),
-            model=model,
+        # Use cleaned text for coding
+        answer = ans.get("cleaned_text", ans.get("original_text", ""))
+        if not answer:
+            continue
+        
+        code_result = code_response_with_kb(
+            client, q_id, q_text, answer, model=model
         )
-        coded.append({
-            "question_id": q_id,
-            "original_text": ans.get("original_text", ""),
-            "cleaned_text": ans.get("cleaned_text", ""),
-            "code_result": result,
-        })
+        code_result["question_id"] = q_id
+        coded.append(code_result)
     
     return answers, coded

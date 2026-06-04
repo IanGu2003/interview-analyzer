@@ -217,7 +217,7 @@ st.markdown("""
 """)
 
 # ---------- Tabs ----------
-tab1, tab2, tab3, tab4 = st.tabs(["📤 上传与处理", "📋 访谈问题编辑", "📚 知识库管理", "❓ 使用说明"])
+tab1, tab2, tab3, tab4, tab5 = st.tabs(["📤 上传与处理", "📋 访谈问题编辑", "📚 知识库管理", "📊 系统监控", "❓ 使用说明"])
 
 # ===== Tab 1: Upload & Process =====
 with tab1:
@@ -739,8 +739,99 @@ with tab3:
                 st.rerun()
 
 
-# ===== Tab 4: Usage Guide =====
+# ===== Tab 4: System Monitoring =====
 with tab4:
+    st.markdown("## 📊 Agent 可观测性面板")
+    st.caption("所有 LLM 调用的实时监控数据，帮助诊断系统瓶颈和幻觉问题。")
+
+    # Read events log
+    events_path = os.path.join(os.path.dirname(__file__), "logs", "events.jsonl")
+    if not os.path.exists(events_path):
+        st.info("💡 暂无监控数据。上传音频并完成一次全流程分析后，数据会自动出现在这里。")
+    else:
+        import pandas as pd
+
+        try:
+            df = pd.read_json(events_path, lines=True)
+            if df.empty:
+                st.info("💡 监控文件为空，完成一次全流程分析后查看。")
+            else:
+                # Parse timestamp
+                df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce")
+
+                # ── Top 4 Metric Cards ──
+                st.subheader("概览指标")
+                c1, c2, c3, c4 = st.columns(4)
+                total_calls = len(df)
+                avg_latency = df["latency_ms"].mean()
+                json_fail_rate = (1 - df["json_parse_ok"].mean()) * 100 if "json_parse_ok" in df.columns else 0
+                total_tokens = df["tokens"].sum()
+
+                c1.metric("总调用数", total_calls)
+                c2.metric("平均延迟", f"{avg_latency:.0f} ms")
+                c3.metric("JSON解析失败率", f"{json_fail_rate:.1f}%")
+                c4.metric("累计 Token", f"{total_tokens:,}")
+
+                # ── Latency by Call Type ──
+                st.subheader("各环节延迟分布 (ms)")
+                if "call_type" in df.columns and "latency_ms" in df.columns:
+                    latency_by_type = df.groupby("call_type")["latency_ms"].agg(["mean", "count"])
+                    st.dataframe(
+                        latency_by_type.style.format({"mean": "{:.0f}", "count": "{:.0f}"}),
+                        use_container_width=True,
+                    )
+                    # Bar chart
+                    chart_data = latency_by_type.reset_index()
+                    st.bar_chart(chart_data, x="call_type", y="mean")
+
+                # ── JSON Parse Failures ──
+                st.subheader("⚠️ JSON 解析失败记录")
+                if "json_parse_ok" in df.columns:
+                    failures = df[~df["json_parse_ok"]].tail(20)
+                    if not failures.empty:
+                        show_cols = ["timestamp", "call_type", "input_length", "tokens", "latency_ms"]
+                        show_cols = [c for c in show_cols if c in failures.columns]
+                        st.dataframe(
+                            failures[show_cols].style.format({"latency_ms": "{:.0f}"}),
+                            use_container_width=True,
+                        )
+                    else:
+                        st.success("✅ 最近没有 JSON 解析失败记录")
+
+                # ── Hallucination Rate ──
+                st.subheader("🎭 幻觉率（引用校验）")
+                contract_rows = df[df["call_type"] == "contract_check.extract_answers"]
+                if not contract_rows.empty:
+                    latest = contract_rows.iloc[-1]
+                    hallucinated = latest.get("hallucinated_count", 0)
+                    total_extracted = latest.get("extracted_count", 1)
+                    halluc_rate = hallucinated / total_extracted * 100 if total_extracted > 0 else 0
+                    st.metric("最近一轮的幻觉率", f"{halluc_rate:.1f}%",
+                              delta=f"{hallucinated}/{total_extracted} 条引用未通过校验",
+                              delta_color="inverse")
+                    if halluc_rate > 10:
+                        st.warning("⚠️ 幻觉率偏高（>10%），建议检查 Prompt 或降低 temperature")
+                    else:
+                        st.success("✅ 幻觉率在健康范围内")
+
+                # ── Call Volume Trend ──
+                st.subheader("调用量趋势")
+                if not df.empty and "timestamp" in df.columns:
+                    valid = df.dropna(subset=["timestamp"])
+                    if not valid.empty:
+                        hourly = valid.set_index("timestamp").resample("1H").size()
+                        if len(hourly) > 1:
+                            st.line_chart(hourly)
+                        else:
+                            st.caption("数据量不足以绘制趋势图，继续使用后会自动生成。")
+
+        except Exception as e:
+            st.error(f"读取监控数据失败: {e}")
+            st.caption("日志文件可能已损坏，删除 logs/events.jsonl 后重新分析即可重置。")
+
+
+# ===== Tab 5: Usage Guide =====
+with tab5:
     st.markdown("""
     ## 📖 使用说明
 
