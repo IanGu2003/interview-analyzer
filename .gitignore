@@ -29,5 +29,9 @@ Thumbs.db
 coverage/
 coverage.xml
 htmlcov/
-.coverage.streamlit/secrets.toml
+
+# Logs
+logs/*.jsonl
+
+# Coze
 .cozeproj/reduction

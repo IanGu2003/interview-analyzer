@@ -9,6 +9,9 @@ authors = [
     {name = "Ian Gu"},
 ]
 keywords = ["interview", "analysis", "nlp", "asr", "langchain", "streamlit"]
+dependencies = [
+    "git-filter-repo>=2.47.0",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
